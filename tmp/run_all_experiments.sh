@@ -21,7 +21,10 @@ set -e  # Exit on error
 # Configuration
 CELLFLOW_DIR="/home/zhangshibo24s/cell_flow"
 COMPARISON_DIR="$CELLFLOW_DIR/comparison_methods"
-LOG_DIR="$CELLFLOW_DIR/logs_all_experiments"
+DATE=$(date +%Y%m%d_%H%M)
+RUN_ID=${CELLFLOW_RUN_ID:-$(date +%Y%m%d_%H%M%S)_$$}
+export CELLFLOW_RUN_ID=$RUN_ID
+LOG_DIR="$CELLFLOW_DIR/results/logs/$RUN_ID"
 mkdir -p "$LOG_DIR"
 
 # Default GPU (can be overridden by environment variable)
@@ -31,6 +34,7 @@ export CUDA_VISIBLE_DEVICES=$GPU_ID
 echo "=========================================="
 echo "Starting all 18 experiments"
 echo "GPU: $GPU_ID"
+echo "Run ID: $RUN_ID"
 echo "Log directory: $LOG_DIR"
 echo "Time: $(date)"
 echo "=========================================="
@@ -44,18 +48,21 @@ echo "=== Starting CellFlow (Our Method) ==="
 # CellFlow Norman Additive
 echo "Starting: cellflow_norman_additive"
 nohup python "$CELLFLOW_DIR/train_cellflow_norman_scdfm_additive.py" \
+    --output-dir "results/outputs/outputs_norman_scdfm_additive_${RUN_ID}" \
     > "$LOG_DIR/cellflow_norman_additive.log" 2>&1 &
 echo "  PID: $!"
 
 # CellFlow Norman Holdout
 echo "Starting: cellflow_norman_holdout"
 nohup python "$CELLFLOW_DIR/train_cellflow_norman_scdfm_holdout.py" \
+    --output-dir "results/outputs/outputs_norman_scdfm_holdout_${RUN_ID}" \
     > "$LOG_DIR/cellflow_norman_holdout.log" 2>&1 &
 echo "  PID: $!"
 
 # CellFlow LOCO
 echo "Starting: cellflow_loco"
 nohup python "$CELLFLOW_DIR/train_cellflow_loco_new.py" \
+    --output-dir "results/outputs/outputs_loco_${RUN_ID}" \
     > "$LOG_DIR/cellflow_loco.log" 2>&1 &
 echo "  PID: $!"
 
@@ -69,8 +76,9 @@ echo "=== Starting CellFlow Baseline (No Graph Fusion) ==="
 echo "Starting: cellflow_baseline_norman_additive"
 nohup python "$CELLFLOW_DIR/train_cellflow_norman_scdfm_additive.py" \
     --no-x-graph-fusion-enabled \
+    --condition-combined-loss-weight 0 \
     --run-name norman_baseline_additive \
-    --output-dir outputs_norman_baseline_additive \
+    --output-dir "results/outputs/outputs_norman_baseline_additive_${RUN_ID}" \
     > "$LOG_DIR/cellflow_baseline_norman_additive.log" 2>&1 &
 echo "  PID: $!"
 
@@ -78,8 +86,9 @@ echo "  PID: $!"
 echo "Starting: cellflow_baseline_norman_holdout"
 nohup python "$CELLFLOW_DIR/train_cellflow_norman_scdfm_holdout.py" \
     --no-x-graph-fusion-enabled \
+    --condition-combined-loss-weight 0 \
     --run-name norman_baseline_holdout \
-    --output-dir outputs_norman_baseline_holdout \
+    --output-dir "results/outputs/outputs_norman_baseline_holdout_${RUN_ID}" \
     > "$LOG_DIR/cellflow_baseline_norman_holdout.log" 2>&1 &
 echo "  PID: $!"
 
@@ -87,8 +96,9 @@ echo "  PID: $!"
 echo "Starting: cellflow_baseline_loco"
 nohup python "$CELLFLOW_DIR/train_cellflow_loco_new.py" \
     --no-x-graph-fusion-enabled \
+    --condition-combined-loss-weight 0 \
     --run-name loco_baseline \
-    --output-dir outputs_loco_baseline \
+    --output-dir "results/outputs/outputs_loco_baseline_${RUN_ID}" \
     > "$LOG_DIR/cellflow_baseline_loco.log" 2>&1 &
 echo "  PID: $!"
 

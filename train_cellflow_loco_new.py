@@ -346,7 +346,7 @@ def parse_args():
     p.add_argument("--predict-batch-size", type=int, default=256)
     p.add_argument("--skip-prediction", action="store_true")
     # p.add_argument("--valid-freq", type=int, default=500)
-    p.add_argument("--output-dir", default="outputs")
+    p.add_argument("--output-dir", default="results/outputs/outputs")
     p.add_argument("--run-name", default=None, help="Optional run name used in saved model/prediction/log filenames.")
     p.add_argument("--gpu-id", default=os.environ.get("CUDA_VISIBLE_DEVICES", "1"), help="Visible GPU id for this run.")
     p.add_argument("--solver", choices=["otfm", "genot"], default="otfm")

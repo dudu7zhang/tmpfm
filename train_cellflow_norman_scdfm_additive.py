@@ -464,7 +464,7 @@ def parse_args():
     p.add_argument("--batch-size", type=int, default=256)
     p.add_argument("--predict-batch-size", type=int, default=256)
     p.add_argument("--skip-prediction", action="store_true")
-    p.add_argument("--output-dir", default="outputs_norman_scdfm_additive")
+    p.add_argument("--output-dir", default="results/outputs/outputs_norman_scdfm_additive")
     p.add_argument("--run-name", default="norman_scdfm_additive")
     p.add_argument("--gpu-id", default=os.environ.get("CUDA_VISIBLE_DEVICES", "1"))
     p.add_argument("--solver", choices=["otfm", "genot"], default="otfm")

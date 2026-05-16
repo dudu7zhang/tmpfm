@@ -20,32 +20,35 @@ set -e
 CELLFLOW_DIR="/home/zhangshibo24s/cell_flow"
 COMPARISON_DIR="$CELLFLOW_DIR/comparison_methods"
 DATE=$(date +%Y%m%d_%H%M)
-LOG_DIR="$CELLFLOW_DIR/logs_all_experiments_${DATE}"
+RUN_ID=${CELLFLOW_RUN_ID:-$(date +%Y%m%d_%H%M%S)_$$}
+export CELLFLOW_RUN_ID=$RUN_ID
+LOG_DIR="$CELLFLOW_DIR/results/logs/$RUN_ID"
 mkdir -p "$LOG_DIR"
 
 # Per-experiment GPU assignment (edit these to match your machine)
 GPU_GEARS_ADDITIVE=0
 GPU_GEARS_HOLDOUT=1
-GPU_GEARS_LOCO=2
-GPU_SCDFM_ADDITIVE=3
-GPU_SCDFM_HOLDOUT=0
-GPU_SCDFM_LOCO=1
-GPU_PERTURBDIFF_ADDITIVE=2
-GPU_PERTURBDIFF_HOLDOUT=3
-GPU_PERTURBDIFF_LOCO=0
-GPU_SQUIDIFF_ADDITIVE=1
-GPU_SQUIDIFF_HOLDOUT=2
-GPU_SQUIDIFF_LOCO=3
+GPU_GEARS_LOCO=4
+GPU_SCDFM_ADDITIVE=5
+GPU_SCDFM_HOLDOUT=6
+GPU_SCDFM_LOCO=7
+GPU_PERTURBDIFF_ADDITIVE=0
+GPU_PERTURBDIFF_HOLDOUT=1
+GPU_PERTURBDIFF_LOCO=4
+GPU_SQUIDIFF_ADDITIVE=5
+GPU_SQUIDIFF_HOLDOUT=6
+GPU_SQUIDIFF_LOCO=7
 
 echo "=========================================="
 echo "Starting comparison experiments (12 runs)"
 echo "Conda env: cmp_methods"
+echo "Run ID: $RUN_ID"
 echo "Log directory: $LOG_DIR"
 echo "Time: $(date)"
 echo "=========================================="
 
 # Activate conda environment
-source activate cmp_methods || conda activate cmp_methods
+# source activate cmp_methods || conda activate cmp_methods
 
 # =============================================================================
 # GEARS

@@ -3,7 +3,7 @@
 # Check status of all 18 experiments
 # =============================================================================
 
-LOG_DIR="/home/zhangshibo24s/cell_flow/logs_all_experiments"
+LOG_DIR="/home/zhangshibo24s/cell_flow/results/logs"
 
 echo "=========================================="
 echo "Experiment Status Check"
