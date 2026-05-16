@@ -1,0 +1,128 @@
+Traceback (most recent call last):
+  File "/home/zhangshibo24s/cell_flow/train_cellflow_norman.py", line 40, in <module>
+    import scanpy as sc
+  File "/home/zhangshibo24s/miniconda3/envs/flow/lib/python3.10/site-packages/scanpy/__init__.py", line 38, in <module>
+    from . import datasets, experimental, external, get, logging, metrics, queries
+  File "/home/zhangshibo24s/miniconda3/envs/flow/lib/python3.10/site-packages/scanpy/external/__init__.py", line 8, in <module>
+    from . import exporting, pl, pp, tl
+  File "/home/zhangshibo24s/miniconda3/envs/flow/lib/python3.10/site-packages/scanpy/external/exporting.py", line 11, in <module>
+    import matplotlib.pyplot as plt
+  File "/home/zhangshibo24s/miniconda3/envs/flow/lib/python3.10/site-packages/matplotlib/pyplot.py", line 69, in <module>
+    from matplotlib.figure import Figure, FigureBase, figaspect
+  File "/home/zhangshibo24s/miniconda3/envs/flow/lib/python3.10/site-packages/matplotlib/figure.py", line 40, in <module>
+    from matplotlib import _blocking_input, backend_bases, _docstring, projections
+  File "/home/zhangshibo24s/miniconda3/envs/flow/lib/python3.10/site-packages/matplotlib/projections/__init__.py", line 55, in <module>
+    from .. import axes, _docstring
+  File "/home/zhangshibo24s/miniconda3/envs/flow/lib/python3.10/site-packages/matplotlib/axes/__init__.py", line 2, in <module>
+    from ._axes import Axes
+  File "/home/zhangshibo24s/miniconda3/envs/flow/lib/python3.10/site-packages/matplotlib/axes/_axes.py", line 20, in <module>
+    import matplotlib.legend as mlegend
+  File "/home/zhangshibo24s/miniconda3/envs/flow/lib/python3.10/site-packages/matplotlib/legend.py", line 342, in <module>
+    class Legend(Artist):
+  File "/home/zhangshibo24s/miniconda3/envs/flow/lib/python3.10/site-packages/matplotlib/artist.py", line 149, in __init_subclass__
+    cls._update_set_signature_and_docstring()
+  File "/home/zhangshibo24s/miniconda3/envs/flow/lib/python3.10/site-packages/matplotlib/artist.py", line 177, in _update_set_signature_and_docstring
+    + kwdoc(cls))
+  File "/home/zhangshibo24s/miniconda3/envs/flow/lib/python3.10/site-packages/matplotlib/artist.py", line 1851, in kwdoc
+    'Properties:\n' + '\n'.join(ai.pprint_setters(leadingspace=4)))
+  File "/home/zhangshibo24s/miniconda3/envs/flow/lib/python3.10/site-packages/matplotlib/artist.py", line 1612, in pprint_setters
+    accepts = self.get_valid_values(prop)
+  File "/home/zhangshibo24s/miniconda3/envs/flow/lib/python3.10/site-packages/matplotlib/artist.py", line 1485, in get_valid_values
+    match = self._get_valid_values_regex.search(docstring)
+KeyboardInterrupt
+Error in sys.excepthook:
+Traceback (most recent call last):
+  File "/home/zhangshibo24s/miniconda3/envs/flow/lib/python3.10/linecache.py", line 46, in getlines
+    return updatecache(filename, module_globals)
+  File "/home/zhangshibo24s/miniconda3/envs/flow/lib/python3.10/linecache.py", line 136, in updatecache
+    with tokenize.open(fullname) as fp:
+  File "/home/zhangshibo24s/miniconda3/envs/flow/lib/python3.10/tokenize.py", line 396, in open
+    encoding, lines = detect_encoding(buffer.readline)
+  File "/home/zhangshibo24s/miniconda3/envs/flow/lib/python3.10/tokenize.py", line 365, in detect_encoding
+    first = read_or_stop()
+  File "/home/zhangshibo24s/miniconda3/envs/flow/lib/python3.10/tokenize.py", line 323, in read_or_stop
+    return readline()
+KeyboardInterrupt
+
+Original exception was:
+Traceback (most recent call last):
+  File "/home/zhangshibo24s/cell_flow/train_cellflow_norman.py", line 45, in <module>
+    from cellflow.model._cellflow import CellFlow
+  File "/home/zhangshibo24s/cell_flow/cellflow/__init__.py", line 3, in <module>
+    import cellflow.preprocessing as pp
+  File "/home/zhangshibo24s/cell_flow/cellflow/preprocessing/__init__.py", line 1, in <module>
+    from cellflow.preprocessing._gene_emb import (
+  File "/home/zhangshibo24s/cell_flow/cellflow/preprocessing/_gene_emb.py", line 16, in <module>
+    from transformers import AutoTokenizer, EsmModel
+  File "<frozen importlib._bootstrap>", line 1075, in _handle_fromlist
+  File "/home/zhangshibo24s/miniconda3/envs/flow/lib/python3.10/site-packages/transformers/utils/import_utils.py", line 2096, in __getattr__
+    module = self._get_module(self._class_to_module[name])
+  File "/home/zhangshibo24s/miniconda3/envs/flow/lib/python3.10/site-packages/transformers/utils/import_utils.py", line 2288, in _get_module
+    return importlib.import_module("." + module_name, self.__name__)
+  File "/home/zhangshibo24s/miniconda3/envs/flow/lib/python3.10/importlib/__init__.py", line 126, in import_module
+    return _bootstrap._gcd_import(name[level:], package, level)
+  File "/home/zhangshibo24s/miniconda3/envs/flow/lib/python3.10/site-packages/transformers/models/auto/tokenization_auto.py", line 37, in <module>
+    from .auto_factory import _LazyAutoMapping
+  File "/home/zhangshibo24s/miniconda3/envs/flow/lib/python3.10/site-packages/transformers/models/auto/auto_factory.py", line 43, in <module>
+    from ...generation import GenerationMixin
+  File "<frozen importlib._bootstrap>", line 1075, in _handle_fromlist
+  File "/home/zhangshibo24s/miniconda3/envs/flow/lib/python3.10/site-packages/transformers/utils/import_utils.py", line 2096, in __getattr__
+    module = self._get_module(self._class_to_module[name])
+  File "/home/zhangshibo24s/miniconda3/envs/flow/lib/python3.10/site-packages/transformers/utils/import_utils.py", line 2288, in _get_module
+    return importlib.import_module("." + module_name, self.__name__)
+  File "/home/zhangshibo24s/miniconda3/envs/flow/lib/python3.10/importlib/__init__.py", line 126, in import_module
+    return _bootstrap._gcd_import(name[level:], package, level)
+  File "/home/zhangshibo24s/miniconda3/envs/flow/lib/python3.10/site-packages/transformers/generation/utils.py", line 44, in <module>
+    from ..masking_utils import create_masks_for_generate
+  File "/home/zhangshibo24s/miniconda3/envs/flow/lib/python3.10/site-packages/transformers/masking_utils.py", line 40, in <module>
+    from torch._dynamo._trace_wrapped_higher_order_op import TransformGetItemToIndex
+  File "/home/zhangshibo24s/miniconda3/envs/flow/lib/python3.10/site-packages/torch/_dynamo/__init__.py", line 13, in <module>
+    from . import (
+  File "/home/zhangshibo24s/miniconda3/envs/flow/lib/python3.10/site-packages/torch/_dynamo/aot_compile.py", line 14, in <module>
+    from torch._dynamo.convert_frame import GraphRuntimeEnv
+  File "/home/zhangshibo24s/miniconda3/envs/flow/lib/python3.10/site-packages/torch/_dynamo/convert_frame.py", line 60, in <module>
+    from torch._dynamo.symbolic_convert import TensorifyState
+  File "/home/zhangshibo24s/miniconda3/envs/flow/lib/python3.10/site-packages/torch/_dynamo/symbolic_convert.py", line 59, in <module>
+    from . import (
+  File "/home/zhangshibo24s/miniconda3/envs/flow/lib/python3.10/site-packages/torch/_dynamo/trace_rules.py", line 59, in <module>
+    from .variables import (
+  File "/home/zhangshibo24s/miniconda3/envs/flow/lib/python3.10/site-packages/torch/_dynamo/variables/__init__.py", line 19, in <module>
+    from .base import VariableTracker
+  File "/home/zhangshibo24s/miniconda3/envs/flow/lib/python3.10/site-packages/torch/_dynamo/variables/base.py", line 824, in <module>
+    from . import builder
+  File "/home/zhangshibo24s/miniconda3/envs/flow/lib/python3.10/site-packages/torch/_dynamo/variables/builder.py", line 100, in <module>
+    from ..side_effects import SideEffects
+  File "/home/zhangshibo24s/miniconda3/envs/flow/lib/python3.10/site-packages/torch/_dynamo/side_effects.py", line 34, in <module>
+    from torch._dynamo.variables.misc import AutogradFunctionContextVariable
+  File "/home/zhangshibo24s/miniconda3/envs/flow/lib/python3.10/site-packages/torch/_dynamo/variables/misc.py", line 71, in <module>
+    from .functions import NestedUserFunctionVariable, UserFunctionVariable
+  File "/home/zhangshibo24s/miniconda3/envs/flow/lib/python3.10/site-packages/torch/_dynamo/variables/functions.py", line 93, in <module>
+    from torch.distributed.fsdp._fully_shard import _fsdp_param_group
+  File "/home/zhangshibo24s/miniconda3/envs/flow/lib/python3.10/site-packages/torch/distributed/fsdp/__init__.py", line 1, in <module>
+    from ._flat_param import FlatParameter as FlatParameter
+  File "/home/zhangshibo24s/miniconda3/envs/flow/lib/python3.10/site-packages/torch/distributed/fsdp/_flat_param.py", line 33, in <module>
+    from ._fsdp_extensions import (
+  File "/home/zhangshibo24s/miniconda3/envs/flow/lib/python3.10/site-packages/torch/distributed/fsdp/_fsdp_extensions.py", line 6, in <module>
+    from torch.distributed._shard.sharded_tensor.api import ShardedTensor
+  File "/home/zhangshibo24s/miniconda3/envs/flow/lib/python3.10/site-packages/torch/distributed/_shard/__init__.py", line 1, in <module>
+    from .api import _shard_tensor, load_with_process_group, shard_module, shard_parameter
+  File "/home/zhangshibo24s/miniconda3/envs/flow/lib/python3.10/site-packages/torch/distributed/_shard/api.py", line 8, in <module>
+    from torch.distributed._shard.sharded_tensor import ShardedTensor
+  File "/home/zhangshibo24s/miniconda3/envs/flow/lib/python3.10/site-packages/torch/distributed/_shard/sharded_tensor/__init__.py", line 8, in <module>
+    from .api import (
+  File "/home/zhangshibo24s/miniconda3/envs/flow/lib/python3.10/site-packages/torch/distributed/_shard/sharded_tensor/api.py", line 32, in <module>
+    from .reshard import reshard_local_shard, reshuffle_local_shard
+  File "/home/zhangshibo24s/miniconda3/envs/flow/lib/python3.10/site-packages/torch/distributed/_shard/sharded_tensor/reshard.py", line 13, in <module>
+    from torch.distributed.nn.functional import all_to_all, all_to_all_single
+  File "/home/zhangshibo24s/miniconda3/envs/flow/lib/python3.10/site-packages/torch/distributed/nn/__init__.py", line 7, in <module>
+    from .api.remote_module import RemoteModule
+  File "/home/zhangshibo24s/miniconda3/envs/flow/lib/python3.10/site-packages/torch/distributed/nn/api/remote_module.py", line 15, in <module>
+    from torch.distributed.nn.jit import instantiator
+  File "/home/zhangshibo24s/miniconda3/envs/flow/lib/python3.10/site-packages/torch/distributed/nn/jit/instantiator.py", line 8, in <module>
+  File "<frozen importlib._bootstrap>", line 1027, in _find_and_load
+  File "<frozen importlib._bootstrap>", line 1006, in _find_and_load_unlocked
+  File "<frozen importlib._bootstrap>", line 688, in _load_unlocked
+  File "<frozen importlib._bootstrap_external>", line 879, in exec_module
+  File "<frozen importlib._bootstrap_external>", line 964, in get_code
+  File "<frozen importlib._bootstrap_external>", line 409, in cache_from_source
+KeyboardInterrupt

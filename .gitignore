@@ -36,3 +36,4 @@ __pycache__/
 # ===== experiment =====
 runs/
 wandb/
+*debug*
