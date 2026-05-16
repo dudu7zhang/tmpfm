@@ -1,0 +1,38 @@
+data
+data_train
+log
+outputs*
+CF
+*.h5ad
+*.log
+*.pyc
+*.ipynb
+
+# ===== data / output =====
+data/
+data_train/
+outputs/
+outputs_*/
+checkpoints/
+*.pt
+*.pth
+*.ckpt
+*.h5ad
+*.npz
+*.log
+*.cache
+.vscode
+*comparison_methods
+# ===== system =====
+__pycache__/
+*.pyc
+*.pyo
+*.DS_Store
+
+# ===== large models =====
+*.bin
+*.safetensors
+
+# ===== experiment =====
+runs/
+wandb/
