@@ -87,6 +87,7 @@ class CellFlowTrainer:
         valid_loaders: dict[str, ValidationSampler] | None = None,
         monitor_metrics: Sequence[str] = [],
         callbacks: Sequence[BaseCallback] = [],
+        seed: int = 0,
     ) -> _otfm.OTFlowMatching | _genot.GENOT:
         """Trains the model.
 
@@ -110,8 +111,8 @@ class CellFlowTrainer:
             The trained model.
         """
         self.training_logs = {"loss": []}
-        rng_jax = jax.random.PRNGKey(0)
-        rng_np = np.random.default_rng(0)
+        rng_jax = jax.random.PRNGKey(seed)
+        rng_np = np.random.default_rng(seed)
 
         # Initiate callbacks
         valid_loaders = valid_loaders or {}

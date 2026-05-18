@@ -1,0 +1,21 @@
+# CellxGene RNA-seq source descriptor
+
+# Dataset files
+dataset_name: null
+dataset_path: ${...path.cellxgene_dir}
+selected_gene_file: ${...path.selected_gene_dir}cellxgene_real_selected_genes_mapped.pkl
+
+# Columns / control semantics
+pert_col: null # H5 obs column for perturbations
+rnaseq_batch_col: donor_id
+perturbseq_batch_col: null
+cell_type_key: cell_type
+cell_line_key: null
+control_pert: null # Perturbation treated as contro
+
+# Holdout definitions
+holdout_celltype: [] # set for testing
+holdout_batches:
+  validation: []
+  test: []
+holdout_pert: []

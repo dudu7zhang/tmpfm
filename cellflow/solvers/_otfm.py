@@ -90,6 +90,8 @@ class OTFlowMatching:
     ):
         self._is_trained: bool = False
         self.vf = vf
+        self._cached_predict_fn = None
+        self._cached_predict_kwargs = None
         self.condition_encoder_mode = self.vf.condition_mode
         self.condition_encoder_regularization = self.vf.regularization
         self.probability_path = probability_path
@@ -286,24 +288,30 @@ class OTFlowMatching:
         rng = utils.default_prng_key(rng)
         encoder_noise = jnp.zeros(noise_dim) if use_mean else jax.random.normal(rng, noise_dim)
 
-        def vf(t: jnp.ndarray, x: jnp.ndarray, args: tuple[dict[str, jnp.ndarray], jnp.ndarray]) -> jnp.ndarray:
-            params = self.vf_state_inference.params
-            condition, encoder_noise = args
-            return self.vf_state_inference.apply_fn({"params": params}, t, x, condition, encoder_noise, train=False)[0]
+        # Cache the compiled function to avoid recompilation on every call
+        kwargs_key = tuple(sorted(kwargs.items()))
+        if self._cached_predict_fn is None or self._cached_predict_kwargs != kwargs_key:
+            def vf(t: jnp.ndarray, x: jnp.ndarray, args: tuple[dict[str, jnp.ndarray], jnp.ndarray]) -> jnp.ndarray:
+                params = self.vf_state_inference.params
+                condition, encoder_noise = args
+                return self.vf_state_inference.apply_fn({"params": params}, t, x, condition, encoder_noise, train=False)[0]
 
-        def solve_ode(x: jnp.ndarray, condition: dict[str, jnp.ndarray], encoder_noise: jnp.ndarray) -> jnp.ndarray:
-            ode_term = diffrax.ODETerm(vf)
-            result = diffrax.diffeqsolve(
-                ode_term,
-                t0=0.0,
-                t1=1.0,
-                y0=x,
-                args=(condition, encoder_noise),
-                **kwargs,
-            )
-            return result.ys[0]
+            def solve_ode(x: jnp.ndarray, condition: dict[str, jnp.ndarray], encoder_noise: jnp.ndarray) -> jnp.ndarray:
+                ode_term = diffrax.ODETerm(vf)
+                result = diffrax.diffeqsolve(
+                    ode_term,
+                    t0=0.0,
+                    t1=1.0,
+                    y0=x,
+                    args=(condition, encoder_noise),
+                    **kwargs,
+                )
+                return result.ys[0]
 
-        x_pred = jax.jit(jax.vmap(solve_ode, in_axes=[0, None, None]))(x, condition, encoder_noise)
+            self._cached_predict_fn = jax.jit(jax.vmap(solve_ode, in_axes=[0, None, None]))
+            self._cached_predict_kwargs = kwargs_key
+
+        x_pred = self._cached_predict_fn(x, condition, encoder_noise)
         return x_pred
 
     def predict(
@@ -384,8 +392,8 @@ class OTFlowMatching:
         if batched:
             keys = sorted(x.keys())
             condition_keys = sorted(set().union(*(condition[k].keys() for k in keys)))
-            _predict_jit = jax.jit(lambda x, condition: self._predict_jit(x, condition, rng, **kwargs))
-            batched_predict = jax.vmap(_predict_jit, in_axes=(0, dict.fromkeys(condition_keys, 0)))
+            # Reuse the cached predict function instead of creating a new jit each time
+            batched_predict = jax.vmap(lambda x, condition: self._predict_jit(x, condition, rng, **kwargs), in_axes=(0, dict.fromkeys(condition_keys, 0)))
             # assert that the number of cells is the same for each condition
             n_cells = x[keys[0]].shape[0]
             for k in keys:

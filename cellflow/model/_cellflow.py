@@ -24,7 +24,7 @@ from cellflow.model._utils import _write_predictions
 from cellflow.networks import _velocity_field
 from cellflow.plotting import _utils
 from cellflow.solvers import _genot, _otfm
-from cellflow.utils import build_adj_matrix, build_condition_gene_masks
+# from cellflow.utils import build_adj_matrix, build_condition_gene_masks  # unused: GRN mask path not active
 from cellflow.training._callbacks import BaseCallback
 from cellflow.training._trainer import CellFlowTrainer
 from cellflow.utils import match_linear
@@ -489,19 +489,18 @@ class CellFlow:
             )
 
         if self._solver_class == _otfm.OTFlowMatching:
-            # build GRN mask if requested
-            if grn_path is not None:
-                solver_kwargs = dict(solver_kwargs)
-                max_hops = int(solver_kwargs.pop("grn_max_hops", 2))
-                matrix = build_adj_matrix(self._adata, trrust_path=grn_path, max_hops=max_hops)
-                cond_gene_masks = build_condition_gene_masks(
-                    adata=self._adata,
-                    perturbation_idx_to_covariates=self.train_data.perturbation_idx_to_covariates,
-                    matrix=matrix,
-                )
-                solver_kwargs = dict(solver_kwargs)
-                # solver_kwargs.setdefault("matrix", matrix)
-                solver_kwargs.setdefault("condition_gene_masks", cond_gene_masks)
+            # build GRN mask if requested (unused: GRN mask path not active)
+            # if grn_path is not None:
+            #     solver_kwargs = dict(solver_kwargs)
+            #     max_hops = int(solver_kwargs.pop("grn_max_hops", 2))
+            #     matrix = build_adj_matrix(self._adata, trrust_path=grn_path, max_hops=max_hops)
+            #     cond_gene_masks = build_condition_gene_masks(
+            #         adata=self._adata,
+            #         perturbation_idx_to_covariates=self.train_data.perturbation_idx_to_covariates,
+            #         matrix=matrix,
+            #     )
+            #     solver_kwargs = dict(solver_kwargs)
+            #     solver_kwargs.setdefault("condition_gene_masks", cond_gene_masks)
 
             self._solver = self._solver_class(
                 vf=self.vf,
@@ -537,6 +536,7 @@ class CellFlow:
         callbacks: Sequence[BaseCallback] = [],
         monitor_metrics: Sequence[str] = [],
         out_of_core_dataloading: bool = False,
+        seed: int = 0,
     ) -> None:
         """Train the model.
 
@@ -591,6 +591,7 @@ class CellFlow:
             valid_loaders=validation_loaders,
             callbacks=callbacks,
             monitor_metrics=monitor_metrics,
+            seed=seed,
         )
 
     def predict(

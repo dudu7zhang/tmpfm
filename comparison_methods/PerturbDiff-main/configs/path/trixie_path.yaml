@@ -1,0 +1,27 @@
+# Filesystem paths for checkpoints, logs, and datasets
+
+# Logging / checkpoint roots
+wandb:
+  logging_dir: "/path/to/perturb_ckpt/perturbflow_wandb"
+diffusion:
+  save_dir: "/path/to/perturb_ckpt/perturbflow_output/rawdata_diffusion_model"
+
+# Shared data root
+tmp_dir: "/path/to/perturb_data"
+
+# Dataset directories
+tahoe100m_dir: "${.tmp_dir}/finetune_data/tahoe100m_full_selected_processed_new/"
+pbmc_dir: "${.tmp_dir}/finetune_data/pbmc_new/"
+replogle_dir: "${.tmp_dir}/finetune_data/nadig_processed_data/"
+cellxgene_dir: "${.tmp_dir}/cellxgene_merged_zst/"
+
+# Common artifacts
+selected_gene_dir: "${.tmp_dir}/selected_genes/"
+indices_cache_dir: "${.tmp_dir}/indices_cache/"
+gene_mapping_file: ${.tmp_dir}/selected_genes/vocab_id2name.csv
+
+# Sampling control-data files
+replogle_ctrl_h5ad: "${.replogle_dir}/replogle.h5ad"
+pbmc_ctrl_h5ad: "${.tmp_dir}/tmp_pbmc_ctrl.h5ad"
+tahoe100m_ctrl_h5ad: "${.tmp_dir}/tmp_ourtahoe_ctrl.h5ad"
+tahoe100m_cellname_to_cellline_pkl: "${.tmp_dir}/meta_data/cellname_to_cellline.pkl"

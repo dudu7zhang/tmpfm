@@ -452,7 +452,7 @@ def parse_args():
     p = argparse.ArgumentParser()
     p.add_argument(
         "--adata",
-        default="/home/zhangshibo24s/cell_flow/data/norman_2019_adata.h5ad",
+        default="/home/zhangshibo24s/cell_flow/data_train/norman_2019_adata.h5ad",
         required=False,
     )
     p.add_argument("--sample-rep", default="X")

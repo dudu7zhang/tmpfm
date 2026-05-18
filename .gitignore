@@ -21,8 +21,9 @@ checkpoints/
 *.npz
 *.log
 *.cache
+*.h5
 .vscode
-*comparison_methods
+
 # ===== system =====
 __pycache__/
 *.pyc
@@ -38,3 +39,10 @@ runs/
 wandb/
 *debug*
 download.py
+
+*.txt
+*.npy
+*.csv
+*.json
+*.tsv
+*.pkl

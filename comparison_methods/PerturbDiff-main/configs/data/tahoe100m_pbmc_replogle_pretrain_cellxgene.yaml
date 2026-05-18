@@ -1,0 +1,68 @@
+# Pretraining mixture: Tahoe100M + PBMC + Replogle + CellxGene
+
+data_name: Tahoe100mPBMCReplogleCellxGenePretrain
+
+defaults:
+  - perturb_data/tahoe100m@tahoe100m
+  - perturb_data/pbmc@pbmc
+  - perturb_data/replogle@replogle
+  - rna_data/cellxgene@cellxgene
+  - _self_
+
+# Source dataset blocks
+dataset_name:
+  pbmc: ${..pbmc}
+  tahoe100m: ${..tahoe100m}
+  replogle: ${..replogle}
+  cellxgene: ${..cellxgene}
+
+# Shared files
+selected_gene_file: ${..path.selected_gene_dir}merged_pbmc_tahoe_rep_cellxgene_genes_mapped.pkl
+indices_cache_dir: ${..path.indices_cache_dir}
+gene_mapping_file: ${..path.gene_mapping_file} # useful for RNA-seq data
+
+# Embedding space
+embed_key: X
+output_space: gene # {gene, latent}
+embed_shape: ${..model.input_dim}
+
+# Sampling and pairing behavior
+use_cell_set: null #16
+optimizer_batch_size: ${..optimization.micro_batch_size}
+sample_cell_set_strategy: same_lpb
+use_fixed_pairing: true
+
+# Basal/control mapping
+basal_mapping_strategy: random # {batch, random, nearest, ot}
+n_basal_samples: 1
+should_yield_control_cells: true
+map_controls: true
+keep_control_cell: false
+
+# Preprocessing / dataloader
+normalize_counts: false
+pin_memory: true
+max_open_files: 16
+num_workers: 0
+prefetch_factor: null
+persistent_workers: false
+
+# Collate / selection
+pad_length: 2000
+select_strategy: "sum"
+mapping_strategy: random
+split_control: false
+sort_gene_names: false
+
+# Global split behavior
+random_holdout_ratio: 0.0005
+skip_cached_indices: false
+
+# Scenario filters
+sample_pbmc_only: false
+sample_replogle_only: false
+sample_tahoe100m_only: false
+skip_tahoe100m: false
+skip_pbmc: false
+skip_cellxgene: false
+skip_replogle: false

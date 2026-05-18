@@ -1,0 +1,58 @@
+# Common dependencies for all comparison methods
+numpy
+pandas
+torch
+scanpy
+anndata
+scipy
+scikit-learn
+tqdm
+h5py
+requests
+PyYAML
+typing_extensions
+
+# GEARS
+torch_geometric
+networkx
+dcor
+seaborn
+wandb
+
+# scDFM
+accelerate
+torchdiffeq
+omegaconf
+hydra-core
+rich
+# fast-transformers
+flash-attn
+timm
+transformers
+tyro
+pertpy
+POT
+geomloss
+cell-eval
+beautifulsoup4
+triton
+jax
+jaxlib
+scvi-tools
+decoupler
+mygene
+diffrax
+optax
+ott-jax
+numpyro
+flax
+pynndescent
+adjustText
+ipywidgets
+
+# Squidiff
+rdkit
+matplotlib
+
+# PerturbDiff
+pytorch-lightning

@@ -1,0 +1,991 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>PerturbDiff Interactive Explorer</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;600;700;800&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet" />
+  <style>
+    html, body { min-height: 100%; overflow: auto; }
+    :root {
+      --bg: #f3efe6;
+      --bg2: #ece3cf;
+      --ink: #1e2930;
+      --muted: #4a5f67;
+      --accent: #0f766e;
+      --accent2: #d97706;
+      --line: rgba(22, 52, 58, 0.22);
+      --panel: rgba(255,255,255,0.72);
+      --code: #f6f8f8;
+      --radius: clamp(10px, 1.2vw, 16px);
+      --title-size: clamp(1.2rem, 2.8vw, 2.2rem);
+      --h2-size: clamp(1rem, 2vw, 1.45rem);
+      --body-size: clamp(0.72rem, 1.1vw, 0.95rem);
+      --small-size: clamp(0.65rem, 0.95vw, 0.82rem);
+      --gap: clamp(0.45rem, 1vw, 0.8rem);
+      --c1: 26%;
+      --c2: 39%;
+      --c3: 35%;
+      --splitter: 10px;
+      --vsplitter: 10px;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: Manrope, sans-serif;
+      color: var(--ink);
+      background:
+        radial-gradient(circle at 15% 18%, rgba(15,118,110,.14), transparent 28%),
+        radial-gradient(circle at 88% 72%, rgba(217,119,6,.12), transparent 24%),
+        linear-gradient(145deg, var(--bg), var(--bg2));
+    }
+    .app {
+      min-height: 100dvh;
+      height: auto;
+      display: grid;
+      grid-template-rows: auto auto auto;
+      align-content: start;
+      gap: var(--gap);
+      padding: clamp(8px, 1vw, 16px);
+    }
+    .topbar, .toolbar, .panel {
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      background: var(--panel);
+      backdrop-filter: blur(2px);
+    }
+    .topbar {
+      padding: clamp(8px, 1vw, 14px) clamp(10px, 1.2vw, 18px);
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: var(--gap);
+    }
+    .title { font-size: var(--title-size); font-weight: 800; letter-spacing: .01em; }
+    .sub { font-size: var(--small-size); color: var(--muted); }
+    .badge {
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      padding: .28rem .62rem;
+      font-size: var(--small-size);
+      background: rgba(255,255,255,.68);
+      white-space: nowrap;
+    }
+    .toolbar {
+      padding: clamp(7px, .9vw, 12px);
+      display: grid;
+      grid-template-columns: 1fr auto;
+      gap: var(--gap);
+      align-items: center;
+    }
+    .flow-inline {
+      min-width: 0;
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      background: rgba(255,255,255,.68);
+      padding: .35rem;
+    }
+    .btns { display: flex; gap: .4rem; }
+    button {
+      border: 1px solid var(--line);
+      border-radius: 9px;
+      background: rgba(255,255,255,.84);
+      padding: .45rem .65rem;
+      font: inherit;
+      font-size: var(--small-size);
+      cursor: pointer;
+      transition: all .18s ease;
+    }
+    button:hover { transform: translateY(-1px); }
+    button.active { background: rgba(15,118,110,.12); border-color: rgba(15,118,110,.45); }
+
+    .main {
+      min-height: 0;
+      height: clamp(420px, 52vh, 560px);
+      display: grid;
+      grid-template-columns: var(--c1) var(--splitter) var(--c2) var(--splitter) var(--c3);
+      gap: 0;
+    }
+
+    .splitter {
+      align-self: stretch;
+      justify-self: center;
+      width: var(--splitter);
+      cursor: col-resize;
+      position: relative;
+      touch-action: none;
+    }
+    .splitter::before {
+      content: "";
+      position: absolute;
+      left: 50%;
+      top: 8px;
+      transform: translateX(-50%);
+      width: 2px;
+      height: calc(100% - 16px);
+      background: rgba(23, 51, 59, 0.2);
+      border-radius: 999px;
+      transition: background 120ms ease;
+    }
+    .splitter:hover::before,
+    .splitter.dragging::before {
+      background: rgba(15, 118, 110, 0.58);
+    }
+
+    .panel {
+      padding: clamp(8px, 1vw, 14px);
+      display: flex;
+      flex-direction: column;
+      min-height: 0;
+      height: 100%;
+      overflow: hidden;
+    }
+    .panel h2 { margin: 0 0 .45rem; font-size: var(--h2-size); }
+    .hint { font-size: var(--small-size); color: var(--muted); margin-bottom: .5rem; }
+
+    .tree { min-height: 0; overflow: auto; padding-right: .2rem; }
+    .node { margin-bottom: .25rem; }
+    .folder-head {
+      font-size: var(--body-size);
+      font-weight: 700;
+      color: #254851;
+      margin: .32rem 0;
+      display: flex;
+      align-items: center;
+      gap: .35rem;
+      cursor: pointer;
+      user-select: none;
+    }
+    .arrow { font-size: .9em; width: 1em; text-align: center; }
+    .files { margin-left: .95rem; display: grid; gap: .2rem; }
+    .file {
+      border: 1px solid transparent;
+      border-radius: 8px;
+      padding: .32rem .42rem;
+      font-family: "JetBrains Mono", monospace;
+      font-size: clamp(.62rem, .88vw, .76rem);
+      cursor: pointer;
+      color: #17343c;
+      background: rgba(255,255,255,.45);
+    }
+    .file:hover, .file.active {
+      border-color: rgba(15,118,110,.38);
+      background: rgba(15,118,110,.11);
+    }
+
+    .center-top {
+      display: flex;
+      flex-direction: column;
+      gap: .45rem;
+      min-height: 0;
+    }
+    .svg-wrap {
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      background: linear-gradient(180deg, rgba(255,255,255,.8), rgba(246,251,250,.72));
+      min-height: 180px;
+      height: clamp(190px, 24vh, 280px);
+      overflow: hidden;
+      position: relative;
+      flex: 0 0 auto;
+    }
+    svg { width: 100%; height: 100%; display: block; }
+    .graph-node { cursor: grab; }
+    .graph-node.dragging { cursor: grabbing; }
+    .graph-node rect {
+      fill: rgba(255,255,255,.92);
+      stroke: rgba(30,57,64,.28);
+      stroke-width: 1;
+      rx: 10;
+    }
+    .graph-node text {
+      font-size: 17px;
+      font-weight: 800;
+      fill: #17333b;
+      pointer-events: none;
+    }
+    .graph-node.active rect {
+      fill: rgba(15,118,110,.16);
+      stroke: rgba(15,118,110,.58);
+      stroke-width: 1.3;
+    }
+    .edge { fill: none; stroke: rgba(23,51,59,.42); stroke-width: 1.2; marker-end: url(#arrow); }
+
+    .steps {
+      display: flex;
+      flex-wrap: nowrap;
+      gap: .4rem;
+      overflow-x: auto;
+      overflow-y: hidden;
+      padding-bottom: .06rem;
+      scrollbar-width: thin;
+    }
+    .step {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: .34rem .44rem;
+      min-height: 0;
+      font-size: clamp(.72rem, .9vw, .88rem);
+      background: rgba(255,255,255,.88);
+      display: flex;
+      flex-direction: column;
+      gap: .16rem;
+      justify-content: center;
+      min-width: 0;
+      flex: 0 0 clamp(170px, 16vw, 230px);
+      overflow-wrap: anywhere;
+      word-break: break-word;
+    }
+    .step strong { font-size: clamp(.86rem, 1.02vw, 1.06rem); }
+    .step.active { border-color: rgba(217,119,6,.6); background: rgba(217,119,6,.14); }
+
+    .detail-top {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: .4rem;
+      margin-bottom: .5rem;
+    }
+    .detail-title { font-size: var(--h2-size); font-weight: 800; }
+    .tags { display: flex; flex-wrap: wrap; gap: .35rem; margin-bottom: .5rem; }
+    .tag {
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      padding: .2rem .52rem;
+      font-size: var(--small-size);
+      background: rgba(255,255,255,.75);
+    }
+    .desc { font-size: var(--body-size); color: #2f4f58; margin-bottom: .55rem; }
+    .code {
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      background: var(--code);
+      padding: .5rem;
+      min-height: 0;
+      overflow: auto;
+      flex: 1;
+    }
+    pre {
+      margin: 0;
+      font-family: "JetBrains Mono", monospace;
+      font-size: clamp(.6rem, .85vw, .74rem);
+      line-height: 1.36;
+      color: #17353d;
+      white-space: pre-wrap;
+    }
+
+    .footnote {
+      margin-top: .45rem;
+      font-size: var(--small-size);
+      color: var(--muted);
+    }
+
+    @media (max-width: 1180px) {
+      :root {
+        --c1: 28%;
+        --c2: 38%;
+        --c3: 34%;
+      }
+    }
+    @media (max-width: 860px) {
+      .toolbar { grid-template-columns: 1fr; }
+      .main { grid-template-columns: 1fr; height: auto; }
+      .splitter { display: none; }
+      .app { min-height: 100dvh; }
+      .panel { min-height: 280px; }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      * { transition-duration: .01ms !important; animation-duration: .01ms !important; }
+    }
+  </style>
+</head>
+<body>
+  <div class="app">
+    <header class="topbar">
+      <div>
+        <div class="title">PerturbDiff Interactive Explorer</div>
+        <div class="sub">A clickable code map for `configs` + `src`</div>
+      </div>
+    </header>
+
+    <section class="toolbar">
+      <div class="flow-inline">
+        <div id="steps" class="steps"></div>
+      </div>
+      <div class="btns">
+        <button id="flow-training" class="active">Training Flow</button>
+        <button id="flow-sampling">Sampling Flow</button>
+      </div>
+    </section>
+
+    <main class="main">
+      <aside class="panel left-panel">
+        <h2>File Explorer</h2>
+        <div class="hint">Click a file to view responsibilities, key functions, and config links</div>
+        <div id="tree" class="tree"></div>
+      </aside>
+      <div id="splitter-left" class="splitter" role="separator" aria-label="Resize left and center panels"></div>
+
+      <section class="panel center-top">
+        <div>
+          <h2>Architecture Graph</h2>
+          <div class="hint">Click graph nodes to jump to details on the right; edges show main call/dependency directions</div>
+        </div>
+        <div class="svg-wrap">
+          <svg id="arch" viewBox="0 0 760 290" role="img" aria-label="Architecture graph"></svg>
+        </div>
+      </section>
+      <div id="splitter-right" class="splitter" role="separator" aria-label="Resize center and right panels"></div>
+
+      <aside class="panel right-panel">
+        <div class="detail-top">
+          <div class="detail-title" id="detail-title">Select a file on the left or a node in the graph</div>
+          <button id="copy-path">Copy Path</button>
+        </div>
+        <div class="tags" id="detail-tags"></div>
+        <div class="desc" id="detail-desc">This area shows the module's role in the repository.</div>
+        <div class="code"><pre id="detail-code">// waiting for selection...</pre></div>
+        <div class="footnote" id="detail-footnote">Tip: start with `src/apps/rawdata/rawdata_diffusion_training.py`.</div>
+      </aside>
+    </main>
+  </div>
+
+  <script>
+    const FILES = [
+      {
+        path: "configs/rawdata_diffusion_training.yaml",
+        group: "configs",
+        title: "Training Top Config",
+        tags: ["hydra", "entry", "training"],
+        desc: "Top-level training config that composes trainer/lightning/data/model/optimization/path/cov_encoding.",
+        code: `defaults:\n  - trainer: base\n  - lightning: base\n  - data: pbmc\n  - optimization: base\n  - path: trixie_path\n  - model: base\n  - cov_encoding: trixie_onehot\nrun_name: pbmc_from_scratch`
+      },
+      {
+        path: "configs/rawdata_diffusion_sampling.yaml",
+        group: "configs",
+        title: "Sampling Top Config",
+        tags: ["hydra", "entry", "sampling"],
+        desc: "Top-level sampling config defining checkpoint/device/DDIM-DDPM and output format.",
+        code: `model_checkpoint_path: null\ndevice: auto\nsampling:\n  use_ddim: true\n  num_sampled_batches: 4\n  batch_size: ${"${..optimization.micro_batch_size}"}\n  output_format: npz`
+      },
+      {
+        path: "configs/model/base.yaml",
+        group: "configs",
+        title: "Model Base",
+        tags: ["cross_dit", "diffusion", "hyperparams"],
+        desc: "Base Cross-DiT parameters and diffusion process hyperparameters.",
+        code: `model_type: Cross_DiT\ninput_dim: 2000\ndit_depth: 8\ndit_num_heads: 8\nsteps: 1000\nnoise_schedule: linear\np_drop_cond: 0.5\np_drop_control: 0.5`
+      },
+      {
+        path: "src/apps/rawdata/rawdata_diffusion_training.py",
+        group: "src/apps",
+        title: "Training Entrypoint",
+        tags: ["hydra.main", "trainer.fit", "pipeline"],
+        desc: "Training entrypoint: resolve cfg -> setup trainer/datamodule/model -> run_pipeline.",
+        code: `@hydra.main(..., config_name=\"rawdata_diffusion_training\")\ndef main(cfg):\n  trainer = setup_trainer(cfg)\n  datamodule = build_datamodule(cfg, logger)\n  populate_covariate_cfg(cfg, datamodule)\n  model = build_model(cfg, logger, datamodule)\n  run_pipeline(trainer, model, datamodule, cfg, logger)`
+      },
+      {
+        path: "src/apps/training/training_runtime.py",
+        group: "src/apps/training",
+        title: "Trainer Runtime",
+        tags: ["pytorch_lightning", "callbacks", "strategy"],
+        desc: "Builds the Lightning Trainer from config with callbacks/logger/profiler/strategy.",
+        code: `def setup_trainer(cfg):\n  trainer_logger = hydra.utils.instantiate(cfg.lightning.logger)\n  strategy = resolve_trainer_strategy(cfg)\n  callbacks = build_callbacks(cfg, trainer_logger)\n  return pl.Trainer(**cfg.trainer, callbacks=callbacks, strategy=strategy, logger=trainer_logger)`
+      },
+      {
+        path: "src/apps/training/training_datamodule_builder.py",
+        group: "src/apps/training",
+        title: "Datamodule Builder",
+        tags: ["dataset selection", "cov dicts"],
+        desc: "Selects DataModule subclass by data_name and writes pert/celltype/batch dictionaries back to cfg.cov_encoding.",
+        code: `if cfg.data.data_name == \"PBMCFinetune\":\n  datamodule = PBMCPerturbationDataModule(...)\n...\ncfg.cov_encoding.num_pert = len(datamodule.pert_dict)\ncfg.model.dataset_dict = datamodule.original_dataset_name_list`
+      },
+      {
+        path: "src/apps/training/training_pipeline.py",
+        group: "src/apps/training",
+        title: "Training Pipeline",
+        tags: ["fit", "validate", "checkpoint"],
+        desc: "Controls fit/validate execution order, including final checkpoint saving.",
+        code: `if not validate_only:\n  trainer.fit(...)\n  trainer.save_checkpoint(cfg.save_dir_path, weights_only=True)\n  trainer.validate(..., ckpt_path=\"best\")\nelse:\n  trainer.validate(..., ckpt_path=cfg.model.ckpt_path)`
+      },
+      {
+        path: "src/apps/rawdata/rawdata_diffusion_sampling.py",
+        group: "src/apps",
+        title: "Sampling Entrypoint",
+        tags: ["sampling", "checkpoint", "generation"],
+        desc: "Sampling entrypoint: build datamodule, load_from_checkpoint, and run generate_samples.",
+        code: `@hydra.main(..., config_name=\"rawdata_diffusion_sampling\")\ndef main(cfg):\n  datamodule = build_sampling_datamodule(cfg, logger)\n  model = load_sampling_model(cfg, logger, datamodule)\n  truths, samples, trajectories, decoded = generate_samples(...)`
+      },
+      {
+        path: "src/apps/sampling/sampling_generation.py",
+        group: "src/apps/sampling",
+        title: "Sampling Generation Core",
+        tags: ["DDIM", "DDPM", "h5ad"],
+        desc: "Core sampling loop: read dataloader -> build self_condition -> run DDIM/DDPM -> aggregate and evaluate.",
+        code: `sample_fn, kwargs = resolve_sampling_runner(cfg, diffusion, use_ddim)\nsample, traj = sample_fn(model.model, shape, self_condition=self_condition, **kwargs)\nr2_metric = r2_score(truth_np.mean(0), sample_np.mean(0))\nsave_adata(pred_adata, true_adata, cfg, logger)`
+      },
+      {
+        path: "src/data/data_module/data_module.py",
+        group: "src/data",
+        title: "DataModule Hierarchy",
+        tags: ["dataloader", "split", "sampler"],
+        desc: "DataModule inheritance chain and dataloader construction; switches split_pbmc/split_tahoe100m/split_cellxgene by scenario.",
+        code: `class PretrainingDataModule(pl.LightningDataModule): ...\nclass PBMCPerturbationDataModule(PretrainingDataModule): ...\nclass Tahoe100mPerturbationDataModule(PBMCPerturbationDataModule): ...\nclass PerturbationPretrainingDataModule(CellxGeneDataModule): ...`
+      },
+      {
+        path: "src/models/lightning/lightning_module.py",
+        group: "src/models/lightning",
+        title: "PlModel",
+        tags: ["training_step", "validation_step", "optimizers"],
+        desc: "Training model wrapper: covariate encoding, loss computation, logging, and optimizer/scheduler config.",
+        code: `loss_dict = self._compute_loss(batch)\nloss = (loss_dict[\"loss\"] * loss_dict[\"weights\"]).mean()\nself.log_data(...)\n...\nreturn [opt_main], [{\"scheduler\": sched_main, \"interval\": \"step\"}]`
+      },
+      {
+        path: "src/models/lightning/lightning_factories.py",
+        group: "src/models/lightning",
+        title: "Factories",
+        tags: ["create_diffusion", "model_init", "sampler"],
+        desc: "Model and diffusion factories: Cross_DiT initialization, beta schedule, and schedule sampler.",
+        code: `def model_init_fn(model_cfg):\n  if model_type == \"cross_dit\": return Cross_DiT(model_cfg)\n\ndef create_diffusion(model_cfg):\n  betas = get_named_beta_schedule(...)\n  return GaussianDiffusion(...)`
+      },
+      {
+        path: "src/models/diffusion/diffusion_core.py",
+        group: "src/models/diffusion",
+        title: "GaussianDiffusion Core",
+        tags: ["q_sample", "posterior", "math"],
+        desc: "Core diffusion math object defining key transforms like q_sample and q_posterior.",
+        code: `class GaussianDiffusion(...):\n  def q_sample(self, x_start, t, noise=None):\n    return sqrt(alpha_bar)*x_start + sqrt(1-alpha_bar)*noise`
+      },
+      {
+        path: "src/models/diffusion/diffusion_training.py",
+        group: "src/models/diffusion",
+        title: "Diffusion Training Mixin",
+        tags: ["training_losses", "MMD", "self-conditioning"],
+        desc: "Training loss composition: Cross-DiT dual-branch outputs + MSE/MMD + condition dropping + self-conditioning.",
+        code: `terms, model_output = self.diffusion_loss(...)\nif p_drop_cond > 0 and rand < p_drop_cond:\n  self_condition[\"batch_emb\"] = None\nlosses[\"loss\"] += (losses[\"mmd1\"] + losses[\"mmd2\"]) * MMD_factor`
+      }
+    ];
+
+    const FLOWS = {
+      training: [
+        {title: "Resolve Hydra", body: "Merge rawdata_diffusion_training.yaml with defaults"},
+        {title: "Setup Trainer", body: "Instantiate PL Trainer via training_runtime.setup_trainer"},
+        {title: "Build Data", body: "Select DataModule by data_name and call setup"},
+        {title: "Build Model", body: "instantiate PlModel + create_diffusion"},
+        {title: "Run Pipeline", body: "trainer.fit -> save_checkpoint -> validate"}
+      ],
+      sampling: [
+        {title: "Resolve Hydra", body: "Merge rawdata_diffusion_sampling.yaml with defaults"},
+        {title: "Build Data", body: "build_sampling_datamodule + setup"},
+        {title: "Load CKPT", body: "PlModel.load_from_checkpoint"},
+        {title: "Generate", body: "Run DDIM/DDPM loops to produce samples"},
+        {title: "Save h5ad", body: "save_adata writes diffusion_predict/true outputs"}
+      ]
+    };
+
+    const GRAPH = {
+      nodes: [
+        {id: "cfg", x: 36, y: 24, w: 140, h: 40, label: "configs"},
+        {id: "apps", x: 222, y: 24, w: 170, h: 40, label: "apps/rawdata"},
+        {id: "runtime", x: 430, y: 24, w: 170, h: 40, label: "training_runtime"},
+        {id: "data", x: 222, y: 126, w: 170, h: 40, label: "data_module"},
+        {id: "lightning", x: 430, y: 126, w: 170, h: 40, label: "lightning_module"},
+        {id: "diff", x: 638, y: 126, w: 120, h: 40, label: "diffusion"},
+        {id: "sampling", x: 326, y: 222, w: 150, h: 40, label: "sampling"}
+      ],
+      edgesByFlow: {
+        training: [
+          ["cfg", "apps"],
+          ["apps", "runtime"],
+          ["apps", "data"],
+          ["apps", "lightning"],
+          ["lightning", "diff"]
+        ],
+        sampling: [
+          ["cfg", "apps"],
+          ["apps", "data"],
+          ["apps", "lightning"],
+          ["apps", "sampling"],
+          ["data", "sampling"],
+          ["lightning", "sampling"],
+          ["sampling", "diff"]
+        ]
+      },
+      baseMapping: {
+        runtime: "src/apps/training/training_runtime.py",
+        data: "src/data/data_module/data_module.py",
+        lightning: "src/models/lightning/lightning_module.py",
+        diff: "src/models/diffusion/diffusion_training.py",
+        sampling: "src/apps/sampling/sampling_generation.py"
+      }
+    };
+
+    const state = {
+      activePath: FILES[3].path,
+      flowType: "training",
+      flowStep: 0,
+      copiedPath: "",
+      graphNodes: null
+    };
+
+    const treeEl = document.getElementById("tree");
+    const detailTitle = document.getElementById("detail-title");
+    const detailDesc = document.getElementById("detail-desc");
+    const detailCode = document.getElementById("detail-code");
+    const detailTags = document.getElementById("detail-tags");
+    const detailFootnote = document.getElementById("detail-footnote");
+    const stepsEl = document.getElementById("steps");
+    const archEl = document.getElementById("arch");
+    const mainEl = document.querySelector(".main");
+    const splitterLeft = document.getElementById("splitter-left");
+    const splitterRight = document.getElementById("splitter-right");
+
+    function byPath(path) {
+      return FILES.find(f => f.path === path);
+    }
+
+    function setupColumnResizers() {
+      if (!mainEl || !splitterLeft || !splitterRight) return;
+
+      const MIN_LEFT = 220;
+      const MIN_CENTER = 360;
+      const MIN_RIGHT = 300;
+
+      function isMobile() {
+        return window.matchMedia("(max-width: 860px)").matches;
+      }
+
+      function getSplitterWidth() {
+        const raw = getComputedStyle(mainEl).getPropertyValue("--splitter").trim();
+        const n = parseFloat(raw);
+        return Number.isFinite(n) ? n : 10;
+      }
+
+      function getTotalResizableWidth() {
+        const splitW = getSplitterWidth();
+        return Math.max(mainEl.clientWidth - splitW * 2, 1);
+      }
+
+      function getPanelWidths() {
+        const left = mainEl.querySelector(".left-panel")?.getBoundingClientRect().width || 0;
+        const center = mainEl.querySelector(".center-top")?.getBoundingClientRect().width || 0;
+        const right = mainEl.querySelector(".right-panel")?.getBoundingClientRect().width || 0;
+        return { left, center, right };
+      }
+
+      function setColumns(left, center, right) {
+        mainEl.style.setProperty("--c1", `${left}px`);
+        mainEl.style.setProperty("--c2", `${center}px`);
+        mainEl.style.setProperty("--c3", `${right}px`);
+      }
+
+      function initColumnsFromLayout() {
+        if (isMobile()) return;
+        const { left, center, right } = getPanelWidths();
+        if (!left || !center || !right) return;
+        setColumns(left, center, right);
+      }
+
+      let drag = null;
+
+      function onPointerMove(e) {
+        if (!drag || isMobile()) return;
+        const dx = e.clientX - drag.startX;
+        const total = getTotalResizableWidth();
+        let left = drag.left;
+        let center = drag.center;
+        let right = drag.right;
+
+        if (drag.which === "left") {
+          left = Math.max(MIN_LEFT, Math.min(drag.left + dx, total - MIN_CENTER - MIN_RIGHT));
+          center = total - left - right;
+          if (center < MIN_CENTER) {
+            center = MIN_CENTER;
+            left = total - center - right;
+          }
+        } else {
+          center = Math.max(MIN_CENTER, Math.min(drag.center + dx, total - MIN_LEFT - MIN_RIGHT));
+          right = total - left - center;
+          if (right < MIN_RIGHT) {
+            right = MIN_RIGHT;
+            center = total - left - right;
+          }
+        }
+
+        setColumns(left, center, right);
+      }
+
+      function stopDrag() {
+        if (!drag) return;
+        drag.el.classList.remove("dragging");
+        drag = null;
+        document.body.style.cursor = "";
+        window.removeEventListener("pointermove", onPointerMove);
+        window.removeEventListener("pointerup", stopDrag);
+      }
+
+      function startDrag(which, el, e) {
+        if (isMobile()) return;
+        const { left, center, right } = getPanelWidths();
+        if (!left || !center || !right) return;
+        setColumns(left, center, right);
+        drag = {
+          which,
+          el,
+          startX: e.clientX,
+          left,
+          center,
+          right,
+        };
+        el.classList.add("dragging");
+        document.body.style.cursor = "col-resize";
+        window.addEventListener("pointermove", onPointerMove);
+        window.addEventListener("pointerup", stopDrag);
+      }
+
+      splitterLeft.addEventListener("pointerdown", (e) => startDrag("left", splitterLeft, e));
+      splitterRight.addEventListener("pointerdown", (e) => startDrag("right", splitterRight, e));
+      window.addEventListener("resize", initColumnsFromLayout);
+      initColumnsFromLayout();
+    }
+
+    function renderTree(filter = "") {
+      const q = filter.trim().toLowerCase();
+      const grouped = {};
+      FILES.forEach(f => {
+        if (q && !(f.path.toLowerCase().includes(q) || f.title.toLowerCase().includes(q) || f.tags.join(" ").toLowerCase().includes(q))) return;
+        if (!grouped[f.group]) grouped[f.group] = [];
+        grouped[f.group].push(f);
+      });
+
+      treeEl.innerHTML = "";
+      Object.entries(grouped).forEach(([group, files]) => {
+        const wrap = document.createElement("div");
+        wrap.className = "node";
+
+        const head = document.createElement("div");
+        head.className = "folder-head";
+        head.innerHTML = `<span class="arrow">▾</span><span>${group}</span>`;
+
+        const list = document.createElement("div");
+        list.className = "files";
+
+        files.forEach(f => {
+          const row = document.createElement("div");
+          row.className = "file" + (f.path === state.activePath ? " active" : "");
+          row.textContent = f.path;
+          row.addEventListener("click", () => { state.activePath = f.path; renderAll(); });
+          list.appendChild(row);
+        });
+
+        head.addEventListener("click", () => {
+          const collapsed = list.style.display === "none";
+          list.style.display = collapsed ? "grid" : "none";
+          head.querySelector(".arrow").textContent = collapsed ? "▾" : "▸";
+        });
+
+        wrap.appendChild(head);
+        wrap.appendChild(list);
+        treeEl.appendChild(wrap);
+      });
+
+      if (!treeEl.children.length) {
+        treeEl.innerHTML = `<div class="hint">No matches found. Try \"diffusion\" or \"hydra\".</div>`;
+      }
+    }
+
+    function renderDetail() {
+      const f = byPath(state.activePath);
+      if (!f) return;
+      detailTitle.textContent = `${f.title}`;
+      detailDesc.textContent = `${f.path} · ${f.desc}`;
+      detailCode.textContent = f.code;
+      detailTags.innerHTML = "";
+      f.tags.forEach(t => {
+        const s = document.createElement("span");
+        s.className = "tag";
+        s.textContent = t;
+        detailTags.appendChild(s);
+      });
+      detailFootnote.textContent = "Related: " + relatedPaths(f.path).join("  |  ");
+    }
+
+    function relatedPaths(path) {
+      const map = {
+        "src/apps/rawdata/rawdata_diffusion_training.py": [
+          "src/apps/training/training_runtime.py",
+          "src/apps/training/training_datamodule_builder.py",
+          "src/apps/training/training_pipeline.py"
+        ],
+        "src/models/lightning/lightning_module.py": [
+          "src/models/lightning/lightning_factories.py",
+          "src/models/diffusion/diffusion_training.py"
+        ],
+        "src/apps/sampling/sampling_generation.py": [
+          "src/apps/rawdata/rawdata_diffusion_sampling.py",
+          "src/apps/sampling/sampling_io.py"
+        ]
+      };
+      return map[path] || ["configs/model/base.yaml", "configs/optimization/base.yaml"];
+    }
+
+    function renderFlow() {
+      const flow = FLOWS[state.flowType];
+      stepsEl.innerHTML = "";
+      flow.forEach((s, idx) => {
+        const el = document.createElement("div");
+        el.className = "step" + (idx === state.flowStep ? " active" : "");
+        el.innerHTML = `<strong>${idx + 1}. ${s.title}</strong><span>${s.body}</span>`;
+        el.addEventListener("click", () => { state.flowStep = idx; renderFlow(); focusStepHint(); });
+        stepsEl.appendChild(el);
+      });
+    }
+
+    function focusStepHint() {
+      const flow = FLOWS[state.flowType];
+      const step = flow[state.flowStep];
+      const hintMap = {
+        "Resolve Hydra": "configs/rawdata_diffusion_training.yaml",
+        "Setup Trainer": "src/apps/training/training_runtime.py",
+        "Build Data": "src/data/data_module/data_module.py",
+        "Build Model": "src/models/lightning/lightning_module.py",
+        "Run Pipeline": "src/apps/training/training_pipeline.py",
+        "Load CKPT": "src/apps/sampling/sampling_setup.py",
+        "Generate": "src/apps/sampling/sampling_generation.py",
+        "Save h5ad": "src/apps/sampling/sampling_io.py"
+      };
+      const target = hintMap[step.title];
+      if (target && byPath(target)) {
+        state.activePath = target;
+        renderTree();
+        renderDetail();
+      }
+    }
+
+    function renderGraph() {
+      archEl.innerHTML = "";
+      const defs = document.createElementNS("http://www.w3.org/2000/svg", "defs");
+      defs.innerHTML = `<marker id="arrow" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L0,6 L7,3 z" fill="rgba(23,51,59,.45)"/></marker>`;
+      archEl.appendChild(defs);
+      const nodePathByFlow = {
+        training: {
+          cfg: "configs/rawdata_diffusion_training.yaml",
+          apps: "src/apps/rawdata/rawdata_diffusion_training.py"
+        },
+        sampling: {
+          cfg: "configs/rawdata_diffusion_sampling.yaml",
+          apps: "src/apps/rawdata/rawdata_diffusion_sampling.py"
+        }
+      };
+      const activeEdges = GRAPH.edgesByFlow[state.flowType] || GRAPH.edgesByFlow.training;
+      const nodePath = (id) =>
+        (nodePathByFlow[state.flowType] && nodePathByFlow[state.flowType][id]) ||
+        GRAPH.baseMapping[id];
+
+      if (!state.graphNodes) {
+        state.graphNodes = GRAPH.nodes.map((n) => ({...n}));
+      }
+
+      const nodes = state.graphNodes;
+      const byId = Object.fromEntries(nodes.map(n => [n.id, n]));
+      const nodeGroup = document.createElementNS("http://www.w3.org/2000/svg", "g");
+      const edgeGroup = document.createElementNS("http://www.w3.org/2000/svg", "g");
+      archEl.appendChild(edgeGroup);
+      archEl.appendChild(nodeGroup);
+
+      const edgeEls = [];
+      activeEdges.forEach(([a, b]) => {
+        const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
+        path.setAttribute("class", "edge");
+        edgeGroup.appendChild(path);
+        edgeEls.push({a, b, el: path});
+      });
+
+      const nodeEls = [];
+      nodes.forEach(n => {
+        const g = document.createElementNS("http://www.w3.org/2000/svg", "g");
+        g.setAttribute("class", "graph-node" + (nodePath(n.id) === state.activePath ? " active" : ""));
+        g.dataset.id = n.id;
+        g.style.userSelect = "none";
+
+        const rect = document.createElementNS("http://www.w3.org/2000/svg", "rect");
+        rect.setAttribute("width", n.w);
+        rect.setAttribute("height", n.h);
+
+        const text = document.createElementNS("http://www.w3.org/2000/svg", "text");
+        text.setAttribute("x", 10);
+        text.setAttribute("y", 25);
+        text.textContent = n.label;
+
+        g.appendChild(rect);
+        g.appendChild(text);
+        nodeGroup.appendChild(g);
+        nodeEls.push({node: n, el: g});
+      });
+
+      function clamp(v, lo, hi) {
+        return Math.max(lo, Math.min(hi, v));
+      }
+
+      function svgPoint(evt) {
+        const pt = archEl.createSVGPoint();
+        pt.x = evt.clientX;
+        pt.y = evt.clientY;
+        return pt.matrixTransform(archEl.getScreenCTM().inverse());
+      }
+
+      function getAnchors(src, dst) {
+        const srcCx = src.x + src.w / 2;
+        const srcCy = src.y + src.h / 2;
+        const dstCx = dst.x + dst.w / 2;
+        const dstCy = dst.y + dst.h / 2;
+
+        if (dst.x > src.x + src.w + 6) {
+          return {sx: src.x + src.w, sy: srcCy, tx: dst.x, ty: dstCy, mode: "h"};
+        }
+        if (src.x > dst.x + dst.w + 6) {
+          return {sx: src.x, sy: srcCy, tx: dst.x + dst.w, ty: dstCy, mode: "h"};
+        }
+        if (dst.y > src.y + src.h + 6) {
+          return {sx: srcCx, sy: src.y + src.h, tx: dstCx, ty: dst.y, mode: "v"};
+        }
+        return {sx: srcCx, sy: src.y, tx: dstCx, ty: dst.y + dst.h, mode: "v"};
+      }
+
+      function edgePath(src, dst) {
+        const {sx, sy, tx, ty, mode} = getAnchors(src, dst);
+        if (mode === "h") {
+          const mx = (sx + tx) / 2;
+          return `M ${sx} ${sy} L ${mx} ${sy} L ${mx} ${ty} L ${tx} ${ty}`;
+        }
+        const my = (sy + ty) / 2;
+        return `M ${sx} ${sy} L ${sx} ${my} L ${tx} ${my} L ${tx} ${ty}`;
+      }
+
+      function updateGraphGeometry() {
+        edgeEls.forEach(({a, b, el}) => {
+          const src = byId[a];
+          const dst = byId[b];
+          el.setAttribute("d", edgePath(src, dst));
+        });
+        nodeEls.forEach(({node, el}) => {
+          el.setAttribute("transform", `translate(${node.x}, ${node.y})`);
+          const active = nodePath(node.id) === state.activePath;
+          el.setAttribute("class", "graph-node" + (active ? " active" : ""));
+        });
+      }
+
+      const drag = {active: false, nodeId: null, dx: 0, dy: 0, moved: 0};
+
+      nodeEls.forEach(({node, el}) => {
+        el.addEventListener("pointerdown", (evt) => {
+          evt.preventDefault();
+          const p = svgPoint(evt);
+          drag.active = true;
+          drag.nodeId = node.id;
+          drag.dx = p.x - node.x;
+          drag.dy = p.y - node.y;
+          drag.moved = 0;
+          el.classList.add("dragging");
+          el.setPointerCapture(evt.pointerId);
+        });
+
+        el.addEventListener("pointermove", (evt) => {
+          if (!drag.active || drag.nodeId !== node.id) return;
+          const p = svgPoint(evt);
+          const nx = clamp(p.x - drag.dx, 8, 760 - node.w - 8);
+          const ny = clamp(p.y - drag.dy, 8, 290 - node.h - 8);
+          drag.moved += Math.abs(node.x - nx) + Math.abs(node.y - ny);
+          node.x = nx;
+          node.y = ny;
+          updateGraphGeometry();
+        });
+
+        el.addEventListener("pointerup", (evt) => {
+          if (drag.active && drag.nodeId === node.id) {
+            el.classList.remove("dragging");
+            if (drag.moved < 3) {
+              const path = nodePath(node.id);
+              if (path) {
+                state.activePath = path;
+                renderAll();
+              }
+            } else {
+              updateGraphGeometry();
+            }
+          }
+          drag.active = false;
+          drag.nodeId = null;
+          try { el.releasePointerCapture(evt.pointerId); } catch {}
+        });
+      });
+
+      archEl.onpointerleave = () => {
+        drag.active = false;
+        drag.nodeId = null;
+      };
+
+      updateGraphGeometry();
+    }
+
+    function renderAll() {
+      renderTree();
+      renderDetail();
+      renderFlow();
+      renderGraph();
+    }
+
+    document.getElementById("flow-training").addEventListener("click", () => {
+      state.flowType = "training";
+      state.flowStep = 0;
+      document.getElementById("flow-training").classList.add("active");
+      document.getElementById("flow-sampling").classList.remove("active");
+      renderAll();
+      focusStepHint();
+    });
+
+    document.getElementById("flow-sampling").addEventListener("click", () => {
+      state.flowType = "sampling";
+      state.flowStep = 0;
+      document.getElementById("flow-sampling").classList.add("active");
+      document.getElementById("flow-training").classList.remove("active");
+      renderAll();
+      focusStepHint();
+    });
+
+    document.getElementById("copy-path").addEventListener("click", async () => {
+      const path = state.activePath || "";
+      try {
+        await navigator.clipboard.writeText(path);
+        state.copiedPath = path;
+        document.getElementById("copy-path").textContent = "Copied";
+        setTimeout(() => { document.getElementById("copy-path").textContent = "Copy Path"; }, 800);
+      } catch {
+        document.getElementById("copy-path").textContent = "Copy failed";
+        setTimeout(() => { document.getElementById("copy-path").textContent = "Copy Path"; }, 800);
+      }
+    });
+
+    window.addEventListener("keydown", (e) => {
+      if (e.key === "[") {
+        state.flowStep = Math.max(0, state.flowStep - 1);
+        renderFlow();
+        focusStepHint();
+      }
+      if (e.key === "]") {
+        const max = FLOWS[state.flowType].length - 1;
+        state.flowStep = Math.min(max, state.flowStep + 1);
+        renderFlow();
+        focusStepHint();
+      }
+    });
+
+    setupColumnResizers();
+    renderAll();
+    focusStepHint();
+  </script>
+</body>
+</html>

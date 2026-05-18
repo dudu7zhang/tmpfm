@@ -18,9 +18,9 @@ LOG_DIR="$CELLFLOW_DIR/results/logs"
 mkdir -p "$LOG_DIR"
 
 # GPU assignment (edit to match your machine)
-GPU_SCDFM_ADDITIVE=${GPU_SCDFM_ADDITIVE:-0}
-GPU_SCDFM_HOLDOUT=${GPU_SCDFM_HOLDOUT:-4}
-GPU_SCDFM_LOCO=${GPU_SCDFM_LOCO:-5}
+GPU_SCDFM_ADDITIVE=${GPU_SCDFM_ADDITIVE:-4}
+GPU_SCDFM_HOLDOUT=${GPU_SCDFM_HOLDOUT:-5}
+GPU_SCDFM_LOCO=${GPU_SCDFM_LOCO:-6}
 
 echo "=========================================="
 echo "Starting scDFM experiments (3 runs)"
@@ -49,10 +49,10 @@ CUDA_VISIBLE_DEVICES=$GPU_SCDFM_HOLDOUT nohup python "$COMPARISON_DIR/scripts/sc
     > "$LOG_DIR/scdfm_norman_holdout.log" 2>&1 &
 echo "  PID: $!"
 
-echo "Starting: scdfm_loco (GPU $GPU_SCDFM_LOCO)"
-CUDA_VISIBLE_DEVICES=$GPU_SCDFM_LOCO nohup python "$COMPARISON_DIR/scripts/scdfm_loco.py" \
-    > "$LOG_DIR/scdfm_loco.log" 2>&1 &
-echo "  PID: $!"
+# echo "Starting: scdfm_loco (GPU $GPU_SCDFM_LOCO)"
+# CUDA_VISIBLE_DEVICES=$GPU_SCDFM_LOCO nohup python "$COMPARISON_DIR/scripts/scdfm_loco.py" \
+#     > "$LOG_DIR/scdfm_loco.log" 2>&1 &
+# echo "  PID: $!"
 
 # =============================================================================
 echo ""

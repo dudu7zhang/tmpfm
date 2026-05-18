@@ -1,0 +1,31 @@
+# Top-level config for training entrypoint
+
+defaults:
+  - _self_
+  - trainer: base
+  - lightning: base
+  - data: pbmc
+  - optimization: base
+  - path: trixie_path
+  - model: base
+  - cov_encoding: trixie_onehot
+
+# Run naming and output
+run_name: pbmc_from_scratch
+save_dir_path: null # automatically filled as "{trainer.default_root_dir}/{run_name}"
+
+# Optional torch profiler
+profiler:
+  enabled: false
+  wait_steps: 1
+  warmup_steps: 1
+  active_steps: 3
+  repeat: 1
+  record_shapes: true
+  profile_memory: true
+  with_stack: false
+  with_flops: false
+  row_limit: 20
+  activities: null
+  output_dir: null
+  filename: "training_profiler"

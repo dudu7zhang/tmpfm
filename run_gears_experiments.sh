@@ -18,9 +18,9 @@ LOG_DIR="$CELLFLOW_DIR/results/logs"
 mkdir -p "$LOG_DIR"
 
 # GPU assignment (edit to match your machine)
-GPU_GEARS_ADDITIVE=${GPU_GEARS_ADDITIVE:-0}
-GPU_GEARS_HOLDOUT=${GPU_GEARS_HOLDOUT:-1}
-GPU_GEARS_LOCO=${GPU_GEARS_LOCO:-2}
+# GPU_GEARS_ADDITIVE=${GPU_GEARS_ADDITIVE:-0}
+GPU_GEARS_HOLDOUT=${GPU_GEARS_HOLDOUT:-0}
+GPU_GEARS_LOCO=${GPU_GEARS_LOCO:-1}
 
 echo "=========================================="
 echo "Starting GEARS experiments (3 runs)"
@@ -39,10 +39,10 @@ conda activate cmp_methods
 echo ""
 echo "=== Starting GEARS ==="
 
-echo "Starting: gears_norman_additive (GPU $GPU_GEARS_ADDITIVE)"
-CUDA_VISIBLE_DEVICES=$GPU_GEARS_ADDITIVE nohup python "$COMPARISON_DIR/scripts/gears_norman_additive.py" \
-    > "$LOG_DIR/gears_norman_additive.log" 2>&1 &
-echo "  PID: $!"
+# echo "Starting: gears_norman_additive (GPU $GPU_GEARS_ADDITIVE)"
+# CUDA_VISIBLE_DEVICES=$GPU_GEARS_ADDITIVE nohup python "$COMPARISON_DIR/scripts/gears_norman_additive.py" \
+#     > "$LOG_DIR/gears_norman_additive.log" 2>&1 &
+# echo "  PID: $!"
 
 echo "Starting: gears_norman_holdout (GPU $GPU_GEARS_HOLDOUT)"
 CUDA_VISIBLE_DEVICES=$GPU_GEARS_HOLDOUT nohup python "$COMPARISON_DIR/scripts/gears_norman_holdout.py" \
