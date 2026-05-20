@@ -383,7 +383,7 @@ def parse_args():
         default=True,
         help="Split control-target sampling by cell_type. Use --no-use-cell-type-split for strict baseline.",
     )
-    p.add_argument("--condition-combined-loss-weight", type=float, default=0.01)
+    p.add_argument("--condition-combined-loss-weight", type=float, default=0.003)
     # p.add_argument("--preset", choices=["jurkat"], default=None, help="Optional preset for known datasets (loads embeddings automatically)")
     return p.parse_args()
 

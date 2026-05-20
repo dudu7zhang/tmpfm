@@ -19,11 +19,11 @@ mkdir -p "$LOG_DIR"
 
 # GPU assignment (edit to match your machine)
 GPU_CELLFLOW_ADDITIVE=${GPU_CELLFLOW_ADDITIVE:-0}
-GPU_CELLFLOW_HOLDOUT=${GPU_CELLFLOW_HOLDOUT:-1}
-GPU_CELLFLOW_LOCO=${GPU_CELLFLOW_LOCO:-2}
+GPU_CELLFLOW_HOLDOUT=${GPU_CELLFLOW_HOLDOUT:-4}
+GPU_CELLFLOW_LOCO=${GPU_CELLFLOW_LOCO:-5}
 
 echo "=========================================="
-echo "Starting CellFlow experiments (3 runs)"
+echo "Starting MyFlow experiments (3 runs)"
 echo "Conda env: flow"
 echo "Run ID: $RUN_ID"
 echo "Log directory: $LOG_DIR"
@@ -35,27 +35,29 @@ source ~/miniconda3/etc/profile.d/conda.sh 2>/dev/null || source /opt/conda/etc/
 conda activate flow
 
 # =============================================================================
-# CellFlow (Our Method) - With Graph Fusion
+# MyFlow (Our Method) - With Graph Fusion
 # =============================================================================
 echo ""
-echo "=== Starting CellFlow (Our Method) ==="
+echo "=== Starting MyFlow (Our Method) ==="
 
-echo "Starting: cellflow_norman_additive (GPU $GPU_CELLFLOW_ADDITIVE)"
-CUDA_VISIBLE_DEVICES=$GPU_CELLFLOW_ADDITIVE nohup python "$CELLFLOW_DIR/train_cellflow_norman_scdfm_additive.py" \
-    --output-dir "results/outputs/outputs_norman_scdfm_additive_${RUN_ID}" \
-    > "$LOG_DIR/cellflow_norman_additive.log" 2>&1 &
-echo "  PID: $!"
+# echo "Starting: myflow_norman_additive (GPU $GPU_CELLFLOW_ADDITIVE)"
+# CUDA_VISIBLE_DEVICES=$GPU_CELLFLOW_ADDITIVE nohup python "$CELLFLOW_DIR/train_cellflow_norman_additive.py" \
+#     --output-dir "results/outputs/outputs_myflow_norman_additive_${RUN_ID}" \
+#     > "$LOG_DIR/myflow_norman_additive.log" 2>&1 &
+# echo "  PID: $!"
 
-echo "Starting: cellflow_norman_holdout (GPU $GPU_CELLFLOW_HOLDOUT)"
-CUDA_VISIBLE_DEVICES=$GPU_CELLFLOW_HOLDOUT nohup python "$CELLFLOW_DIR/train_cellflow_norman_scdfm_holdout.py" \
-    --output-dir "results/outputs/outputs_norman_scdfm_holdout_${RUN_ID}" \
-    > "$LOG_DIR/cellflow_norman_holdout.log" 2>&1 &
-echo "  PID: $!"
+# echo "Starting: myflow_norman_holdout (GPU $GPU_CELLFLOW_HOLDOUT)"
+# CUDA_VISIBLE_DEVICES=$GPU_CELLFLOW_HOLDOUT nohup python "$CELLFLOW_DIR/train_cellflow_norman_holdout.py" \
+#     --output-dir "results/outputs/outputs_myflow_norman_holdout_${RUN_ID}" \
+#     > "$LOG_DIR/myflow_norman_holdout.log" 2>&1 &
+# echo "  PID: $!"
 
-echo "Starting: cellflow_loco (GPU $GPU_CELLFLOW_LOCO)"
+echo "Starting: myflow_loco (GPU $GPU_CELLFLOW_LOCO)"
 CUDA_VISIBLE_DEVICES=$GPU_CELLFLOW_LOCO nohup python "$CELLFLOW_DIR/train_cellflow_loco_new.py" \
-    --output-dir "results/outputs/outputs_loco_${RUN_ID}" \
-    > "$LOG_DIR/cellflow_loco.log" 2>&1 &
+    --train-cell-fraction 0.15 \
+    --num-iterations 15000 \
+    --output-dir "results/outputs/outputs_myflow_loco_${RUN_ID}" \
+    > "$LOG_DIR/myflow_loco.log" 2>&1 &
 echo "  PID: $!"
 
 # =============================================================================
@@ -65,7 +67,7 @@ echo "All 3 CellFlow experiments launched!"
 echo "=========================================="
 echo ""
 echo "Monitor logs:"
-echo "  tail -f $LOG_DIR/cellflow_*.log"
+echo "  tail -f $LOG_DIR/myflow_*.log"
 echo ""
 echo "Check running processes:"
 echo "  ps aux | grep python"

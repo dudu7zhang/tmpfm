@@ -18,9 +18,9 @@ LOG_DIR="$CELLFLOW_DIR/results/logs/$RUN_ID"
 mkdir -p "$LOG_DIR"
 
 # GPU assignment (edit to match your machine)
-GPU_BASELINE_ADDITIVE=${GPU_BASELINE_ADDITIVE:-0}
-GPU_BASELINE_HOLDOUT=${GPU_BASELINE_HOLDOUT:-1}
-GPU_BASELINE_LOCO=${GPU_BASELINE_LOCO:-2}
+GPU_BASELINE_ADDITIVE=${GPU_BASELINE_ADDITIVE:-4}
+GPU_BASELINE_HOLDOUT=${GPU_BASELINE_HOLDOUT:-6}
+GPU_BASELINE_LOCO=${GPU_BASELINE_LOCO:-7}
 
 echo "=========================================="
 echo "Starting CellFlow Baseline experiments (3 runs)"
@@ -41,7 +41,7 @@ echo ""
 echo "=== Starting CellFlow Baseline (No Graph Fusion) ==="
 
 echo "Starting: cellflow_baseline_norman_additive (GPU $GPU_BASELINE_ADDITIVE)"
-CUDA_VISIBLE_DEVICES=$GPU_BASELINE_ADDITIVE nohup python "$CELLFLOW_DIR/train_cellflow_norman_scdfm_additive.py" \
+CUDA_VISIBLE_DEVICES=$GPU_BASELINE_ADDITIVE nohup python "$CELLFLOW_DIR/train_cellflow_norman_additive.py" \
     --no-x-graph-fusion-enabled \
     --condition-combined-loss-weight 0 \
     --run-name norman_baseline_additive \
@@ -50,7 +50,7 @@ CUDA_VISIBLE_DEVICES=$GPU_BASELINE_ADDITIVE nohup python "$CELLFLOW_DIR/train_ce
 echo "  PID: $!"
 
 echo "Starting: cellflow_baseline_norman_holdout (GPU $GPU_BASELINE_HOLDOUT)"
-CUDA_VISIBLE_DEVICES=$GPU_BASELINE_HOLDOUT nohup python "$CELLFLOW_DIR/train_cellflow_norman_scdfm_holdout.py" \
+CUDA_VISIBLE_DEVICES=$GPU_BASELINE_HOLDOUT nohup python "$CELLFLOW_DIR/train_cellflow_norman_holdout.py" \
     --no-x-graph-fusion-enabled \
     --condition-combined-loss-weight 0 \
     --run-name norman_baseline_holdout \
