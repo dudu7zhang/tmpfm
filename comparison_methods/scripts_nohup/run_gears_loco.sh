@@ -16,7 +16,7 @@ echo "Starting GEARS LOCO at $(date)"
 echo "Run ID: $RUN_ID"
 echo "Log file: $LOG_DIR/gears_loco.log"
 
-nohup python "$SCRIPTS_DIR/gears_loco.py" \
+nohup conda run --no-capture-output -n cmp_methods python "$SCRIPTS_DIR/gears_loco.py" \
     > "$LOG_DIR/gears_loco.log" 2>&1 &
 
 echo "PID: $!"

@@ -3,8 +3,8 @@
 # Run all 18 experiments: 6 methods × 3 data splits
 # =============================================================================
 # Methods:
-#   1. CellFlow (our method, with graph fusion)
-#   2. CellFlow-baseline (without graph fusion)
+#   1. MyFlow (our method, with graph fusion)
+#   2. MyFlow-baseline (without graph fusion)
 #   3. GEARS
 #   4. scDFM
 #   5. PerturbDiff
@@ -19,12 +19,12 @@
 set -e  # Exit on error
 
 # Configuration
-CELLFLOW_DIR="/home/zhangshibo24s/cell_flow"
-COMPARISON_DIR="$CELLFLOW_DIR/comparison_methods"
+MYFLOW_DIR="/home/zhangshibo24s/cell_flow"
+COMPARISON_DIR="$MYFLOW_DIR/comparison_methods"
 DATE=$(date +%Y%m%d_%H%M)
-RUN_ID=${CELLFLOW_RUN_ID:-$(date +%Y%m%d_%H%M%S)_$$}
-export CELLFLOW_RUN_ID=$RUN_ID
-LOG_DIR="$CELLFLOW_DIR/results/logs/$RUN_ID"
+RUN_ID=${MYFLOW_RUN_ID:-$(date +%Y%m%d_%H%M%S)_$$}
+export MYFLOW_RUN_ID=$RUN_ID
+LOG_DIR="$MYFLOW_DIR/results/logs/$RUN_ID"
 mkdir -p "$LOG_DIR"
 
 # Default GPU (can be overridden by environment variable)
@@ -40,66 +40,66 @@ echo "Time: $(date)"
 echo "=========================================="
 
 # =============================================================================
-# CellFlow (Our Method) - With Graph Fusion
+# MyFlow (Our Method) - With Graph Fusion
 # =============================================================================
 echo ""
-echo "=== Starting CellFlow (Our Method) ==="
+echo "=== Starting MyFlow (Our Method) ==="
 
-# CellFlow Norman Additive
-echo "Starting: cellflow_norman_additive"
-nohup python "$CELLFLOW_DIR/train_cellflow_norman_scdfm_additive.py" \
+# MyFlow Norman Additive
+echo "Starting: myflow_norman_additive"
+nohup python "$MYFLOW_DIR/train_myflow_norman_scdfm_additive.py" \
     --output-dir "results/outputs/outputs_norman_scdfm_additive_${RUN_ID}" \
-    > "$LOG_DIR/cellflow_norman_additive.log" 2>&1 &
+    > "$LOG_DIR/myflow_norman_additive.log" 2>&1 &
 echo "  PID: $!"
 
-# CellFlow Norman Holdout
-echo "Starting: cellflow_norman_holdout"
-nohup python "$CELLFLOW_DIR/train_cellflow_norman_scdfm_holdout.py" \
+# MyFlow Norman Holdout
+echo "Starting: myflow_norman_holdout"
+nohup python "$MYFLOW_DIR/train_myflow_norman_scdfm_holdout.py" \
     --output-dir "results/outputs/outputs_norman_scdfm_holdout_${RUN_ID}" \
-    > "$LOG_DIR/cellflow_norman_holdout.log" 2>&1 &
+    > "$LOG_DIR/myflow_norman_holdout.log" 2>&1 &
 echo "  PID: $!"
 
-# CellFlow LOCO
-echo "Starting: cellflow_loco"
-nohup python "$CELLFLOW_DIR/train_cellflow_loco_new.py" \
+# MyFlow LOCO
+echo "Starting: myflow_loco"
+nohup python "$MYFLOW_DIR/train_myflow_loco_new.py" \
     --output-dir "results/outputs/outputs_loco_${RUN_ID}" \
-    > "$LOG_DIR/cellflow_loco.log" 2>&1 &
+    > "$LOG_DIR/myflow_loco.log" 2>&1 &
 echo "  PID: $!"
 
 # =============================================================================
-# CellFlow Baseline - Without Graph Fusion
+# MyFlow Baseline - Without Graph Fusion
 # =============================================================================
 echo ""
-echo "=== Starting CellFlow Baseline (No Graph Fusion) ==="
+echo "=== Starting MyFlow Baseline (No Graph Fusion) ==="
 
-# CellFlow Baseline Norman Additive
-echo "Starting: cellflow_baseline_norman_additive"
-nohup python "$CELLFLOW_DIR/train_cellflow_norman_scdfm_additive.py" \
+# MyFlow Baseline Norman Additive
+echo "Starting: myflow_baseline_norman_additive"
+nohup python "$MYFLOW_DIR/train_myflow_norman_scdfm_additive.py" \
     --no-x-graph-fusion-enabled \
     --condition-combined-loss-weight 0 \
     --run-name norman_baseline_additive \
     --output-dir "results/outputs/outputs_norman_baseline_additive_${RUN_ID}" \
-    > "$LOG_DIR/cellflow_baseline_norman_additive.log" 2>&1 &
+    > "$LOG_DIR/myflow_baseline_norman_additive.log" 2>&1 &
 echo "  PID: $!"
 
-# CellFlow Baseline Norman Holdout
-echo "Starting: cellflow_baseline_norman_holdout"
-nohup python "$CELLFLOW_DIR/train_cellflow_norman_scdfm_holdout.py" \
+# MyFlow Baseline Norman Holdout
+echo "Starting: myflow_baseline_norman_holdout"
+nohup python "$MYFLOW_DIR/train_myflow_norman_scdfm_holdout.py" \
     --no-x-graph-fusion-enabled \
     --condition-combined-loss-weight 0 \
     --run-name norman_baseline_holdout \
     --output-dir "results/outputs/outputs_norman_baseline_holdout_${RUN_ID}" \
-    > "$LOG_DIR/cellflow_baseline_norman_holdout.log" 2>&1 &
+    > "$LOG_DIR/myflow_baseline_norman_holdout.log" 2>&1 &
 echo "  PID: $!"
 
-# CellFlow Baseline LOCO
-echo "Starting: cellflow_baseline_loco"
-nohup python "$CELLFLOW_DIR/train_cellflow_loco_new.py" \
+# MyFlow Baseline LOCO
+echo "Starting: myflow_baseline_loco"
+nohup python "$MYFLOW_DIR/train_myflow_loco_new.py" \
     --no-x-graph-fusion-enabled \
     --condition-combined-loss-weight 0 \
     --run-name loco_baseline \
     --output-dir "results/outputs/outputs_loco_baseline_${RUN_ID}" \
-    > "$LOG_DIR/cellflow_baseline_loco.log" 2>&1 &
+    > "$LOG_DIR/myflow_baseline_loco.log" 2>&1 &
 echo "  PID: $!"
 
 # =============================================================================
@@ -206,8 +206,8 @@ echo ""
 echo "Log directory: $LOG_DIR"
 echo ""
 echo "Experiments launched:"
-echo "  - 3 CellFlow (with graph fusion)"
-echo "  - 3 CellFlow baseline (without graph fusion)"
+echo "  - 3 MyFlow (with graph fusion)"
+echo "  - 3 MyFlow baseline (without graph fusion)"
 echo "  - 3 GEARS"
 echo "  - 3 scDFM"
 echo "  - 3 PerturbDiff"

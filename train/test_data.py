@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Minimal training script for `CellFlow`.
+"""Minimal training script for `MyFlow`.
 
 Notes:
 - This script expects to be run from the repository root (`/home/zhangshibo24s/cell_project`).
-- It adds the local `cellflow/src` package to `sys.path` so you don't need to install the package.
+- It adds the local `myflow/src` package to `sys.path` so you don't need to install the package.
 - Provide `--perturbation-covariates` as a JSON string mapping covariate-name -> list-of-obs-columns.
 - Optionally provide `--perturbation-reps` as a JSON dict mapping covariate-name -> key-in-adata.uns holding embeddings.
 """
@@ -19,7 +19,7 @@ import numpy as np
 import scanpy as sc
 from datetime import datetime
 
-from cellflow.utils import build_condition_gene_masks
+from myflow.utils import build_condition_gene_masks
 # from eval import compute_des
 # Make local package importable (src)
 ROOT = Path(__file__).resolve().parent.parent
@@ -29,15 +29,15 @@ if "CUDA_VISIBLE_DEVICES" not in os.environ:
 
 
     try:
-        from cellflow.model._cellflow import CellFlow
+        from myflow.model._myflow import MyFlow
         import anndata as ad
         import numpy as np
         import pandas as pd
-        from cellflow.data._dataloader import ValidationSampler
-        from cellflow.metrics import compute_metrics, compute_mean_metrics
+        from myflow.data._dataloader import ValidationSampler
+        from myflow.metrics import compute_metrics, compute_mean_metrics
     except Exception as e:
         raise ImportError(
-            "Failed to import local `cellflow` package. Make sure you run this from project root and that dependencies are installed.\n"
+            "Failed to import local `myflow` package. Make sure you run this from project root and that dependencies are installed.\n"
             f"Original error: {e}"
         )
 
@@ -117,8 +117,8 @@ def main():
         adata.obs[args.control_key] = adata.obs["target_gene"].astype(str) == "non-targeting"
     out_dir = Path(args.output_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
-    print("Initializing CellFlow (this may import jax/flax/ott)")
-    cf = CellFlow(adata, solver=args.solver)
+    print("Initializing MyFlow (this may import jax/flax/ott)")
+    cf = MyFlow(adata, solver=args.solver)
     print("Preparing data for training")
     cf.prepare_data(
         sample_rep=args.sample_rep,

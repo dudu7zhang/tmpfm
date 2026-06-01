@@ -67,17 +67,33 @@ adata = adata[valid_mask].copy()
 adata.obs["control"] = (adata.obs["target_gene"] == "non-targeting").astype(int)
 adata.obs["condition"] = adata.obs["target_gene"].astype(str).str.replace("non-targeting", "ctrl")
 
-# LOCO split
+# LOCO split. Control/non-targeting cells are basal source data, not
+# perturbation genes.
 rng = np.random.default_rng(SEED)
 holdout_mask = adata.obs["cell_type"] == HOLDOUT
 other_mask = ~holdout_mask
-perts = sorted(adata[holdout_mask].obs["target_gene"].unique().tolist())
-pert_targets = [p for p in perts if p != "non-targeting"]
+holdout_targets = {
+    str(p) for p in adata[holdout_mask].obs["target_gene"].astype(str).unique()
+    if str(p) != "non-targeting"
+}
+other_targets = {
+    str(p) for p in adata[other_mask].obs["target_gene"].astype(str).unique()
+    if str(p) != "non-targeting"
+}
+pert_targets = sorted(holdout_targets & other_targets)
+holdout_only = sorted(holdout_targets - other_targets)
+if holdout_only:
+    print(f"Excluding {len(holdout_only)} holdout-only perturbations: {holdout_only[:5]}...")
+if not pert_targets:
+    raise ValueError(f"No eligible perturbations for holdout {HOLDOUT}")
 shuffled = rng.permutation(pert_targets)
 n_train_perts = int(TRAIN_FRACTION * len(shuffled))
 n_test_perts = int(TEST_FRACTION * len(shuffled))
 train_perts = set(shuffled[:n_train_perts])
 test_perts = set(shuffled[-n_test_perts:])
+missing_test_in_other = test_perts - other_targets
+if missing_test_in_other:
+    raise AssertionError(f"Test perturbations missing from non-holdout cell lines: {missing_test_in_other}")
 
 train_mask = other_mask | (holdout_mask & adata.obs["target_gene"].isin(train_perts)) | (holdout_mask & (adata.obs["target_gene"] == "non-targeting"))
 test_mask = holdout_mask & adata.obs["target_gene"].isin(test_perts)
@@ -97,9 +113,23 @@ def stratified_sub(adata_sub, frac, rng, key="target_gene"):
 adata_train = stratified_sub(adata_train, TRAIN_FRACTION, rng)
 adata_test = stratified_sub(adata_test, TEST_FRACTION, rng)
 
+train_holdout_perts_seen = set(
+    adata_train.obs.loc[
+        (adata_train.obs["cell_type"] == HOLDOUT) & (~adata_train.obs["control"].astype(bool)),
+        "target_gene",
+    ].astype(str)
+)
+test_perts_after_subsample = set(adata_test.obs["target_gene"].astype(str).unique())
+if not test_perts_after_subsample <= other_targets:
+    raise AssertionError("Every test perturbation gene must be observed in non-holdout training cell lines.")
+if test_perts_after_subsample & train_holdout_perts_seen:
+    raise AssertionError("Test perturbation responses leaked into the held-out cell line training subset.")
+if not ((adata_train.obs["cell_type"] == HOLDOUT) & adata_train.obs["control"].astype(bool)).any():
+    raise AssertionError(f"Training set must include {HOLDOUT} control/basal cells.")
+
 # Normalize
-sc.pp.normalize_total(adata_train); sc.pp.log1p(adata_train)
-sc.pp.normalize_total(adata_test); sc.pp.log1p(adata_test)
+# sc.pp.normalize_total(adata_train); sc.pp.log1p(adata_train)
+# sc.pp.normalize_total(adata_test); sc.pp.log1p(adata_test)
 
 # Ensure X is sparse for scDFM
 from scipy import sparse
@@ -160,10 +190,10 @@ for tok in ["<pad>", "<cls>", "<mask>"]:
 device = "cuda" if torch.cuda.is_available() else "cpu"
 N_TOP_GENES = min(adata_train.n_vars, 5000)
 INFER_TOP_GENE = min(N_TOP_GENES, int(os.environ.get("SCDFM_INFER_TOP_GENE", "500")))
-D_MODEL = 128
-STEPS = int(os.environ.get("SCDFM_STEPS", "30000"))
+D_MODEL = 512
+STEPS = int(os.environ.get("SCDFM_STEPS", "5000"))
 LR = 5e-5
-BATCH_SIZE = int(os.environ.get("SCDFM_BATCH_SIZE", "2"))
+BATCH_SIZE = int(os.environ.get("SCDFM_BATCH_SIZE", "96"))
 
 vf = instantiate_model(
     "origin", ntoken=len(vocab), d_model=D_MODEL, d_perturbation=D_MODEL,
@@ -320,8 +350,18 @@ adata_pred = ad.AnnData(X=pred_X, obs=pd.DataFrame({"perturbation": all_obs_list
 adata_pred.write_h5ad(OUTPUT_DIR / f"predictions_{timestamp}.h5ad")
 
 # ===================== Evaluation =====================
-ctrl_eval = adata_train[adata_train.obs["is_control"]].copy()
+ctrl_eval = adata_train[
+    (adata_train.obs["is_control"]) & (adata_train.obs["cell_type"] == HOLDOUT)
+].copy()
+if ctrl_eval.n_obs == 0:
+    raise RuntimeError(f"No {HOLDOUT} control/basal cells found for evaluation.")
 print("\n" + "=" * 50)
-evaluate_predictions(ctrl_eval, adata_test, adata_pred, str(OUTPUT_DIR / f"scdfm_loco_{timestamp}"))
+evaluate_predictions(
+    ctrl_eval,
+    adata_test,
+    adata_pred,
+    str(OUTPUT_DIR / f"scdfm_loco_{timestamp}"),
+    real_condition_key="target_gene",
+)
 print("=" * 50)
 print("Done.")

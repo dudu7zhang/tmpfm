@@ -46,3 +46,7 @@ download.py
 *.json
 *.tsv
 *.pkl
+
+results/
+comparison_methods
+*pdf

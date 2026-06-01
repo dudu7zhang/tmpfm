@@ -17,12 +17,12 @@
 
 set -e
 
-CELLFLOW_DIR="/home/zhangshibo24s/cell_flow"
-COMPARISON_DIR="$CELLFLOW_DIR/comparison_methods"
+MYFLOW_DIR="/home/zhangshibo24s/cell_flow"
+COMPARISON_DIR="$MYFLOW_DIR/comparison_methods"
 DATE=$(date +%Y%m%d_%H%M)
-RUN_ID=${CELLFLOW_RUN_ID:-$(date +%Y%m%d_%H%M%S)_$$}
-export CELLFLOW_RUN_ID=$RUN_ID
-LOG_DIR="$CELLFLOW_DIR/results/logs/$RUN_ID"
+RUN_ID=${MYFLOW_RUN_ID:-$(date +%Y%m%d_%H%M%S)_$$}
+export MYFLOW_RUN_ID=$RUN_ID
+LOG_DIR="$MYFLOW_DIR/results/logs/$RUN_ID"
 mkdir -p "$LOG_DIR"
 
 # Per-experiment GPU assignment (edit these to match your machine)

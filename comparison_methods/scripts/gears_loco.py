@@ -16,7 +16,7 @@ from pathlib import Path
 from datetime import datetime
 
 # Add GEARS to path
-GEARS_ROOT = Path(__file__).resolve().parent.parent / "GEARS-backup"
+GEARS_ROOT = Path(__file__).resolve().parent.parent / "GEARS-main"
 sys.path.insert(0, str(GEARS_ROOT))
 
 from gears import PertData, GEARS
@@ -27,9 +27,11 @@ from eval_utils import evaluate_predictions
 
 SEED = 20240508
 HOLDOUT = "hepg2"
-TRAIN_FRACTION = 0.3
-TEST_FRACTION = 0.3
-ADATA_PATH = "/home/zhangshibo24s/cell_flow/data_train/replogle.h5ad"
+TRAIN_FRACTION = 1.0
+TEST_FRACTION = 1.0
+N_TRAIN_PERTS = 28
+N_TEST_PERTS = 40
+ADATA_PATH = "/home/zhangshibo24s/cell_flow/data_gab/replogle_gab_merged_hvg.h5ad"
 _BASE_OUTPUT_DIR = Path(__file__).resolve().parent.parent.parent / "results" / "outputs" / "outputs_gears_loco"
 _RUN_ID = os.environ.get("CELLFLOW_RUN_ID")
 OUTPUT_DIR = _BASE_OUTPUT_DIR if not _RUN_ID else _BASE_OUTPUT_DIR.with_name(f"{_BASE_OUTPUT_DIR.name}_{_RUN_ID}")
@@ -81,14 +83,36 @@ rng = np.random.default_rng(SEED)
 holdout_mask = adata.obs["cell_type"] == HOLDOUT
 other_mask = ~holdout_mask
 
-perts = sorted(adata[holdout_mask].obs["target_gene"].unique().tolist())
-pert_targets = [p for p in perts if p != "non-targeting"]
-shuffled_perts = rng.permutation(pert_targets)
-n_train_perts = int(TRAIN_FRACTION * len(shuffled_perts))
-n_test_perts = int(TEST_FRACTION * len(shuffled_perts))
+# Test perturbations must also exist in training cell lines (matching MyFlow logic)
+holdout_targets = {
+    str(p) for p in adata[holdout_mask].obs["target_gene"].astype(str).unique()
+    if str(p) != "non-targeting"
+}
+other_targets = {
+    str(p) for p in adata[other_mask].obs["target_gene"].astype(str).unique()
+    if str(p) != "non-targeting"
+}
+pert_targets = sorted(holdout_targets & other_targets)
+holdout_only = sorted(holdout_targets - other_targets)
+if holdout_only:
+    print(f"Excluding {len(holdout_only)} holdout-only perturbations: {holdout_only[:5]}...")
+if not pert_targets:
+    raise ValueError(f"No eligible perturbations for holdout {HOLDOUT}")
 
+shuffled_perts = rng.permutation(pert_targets)
+n_train_perts = N_TRAIN_PERTS
+n_test_perts = N_TEST_PERTS
+
+if n_train_perts + n_test_perts > len(shuffled_perts):
+    raise ValueError(
+        f"n_train_perts ({n_train_perts}) + n_test_perts ({n_test_perts}) = "
+        f"{n_train_perts + n_test_perts} > {len(shuffled_perts)} eligible perturbations."
+    )
 train_perts = set(shuffled_perts[:n_train_perts])
 test_perts = set(shuffled_perts[-n_test_perts:])
+missing_test_in_other = test_perts - other_targets
+if missing_test_in_other:
+    raise AssertionError(f"Test perturbations missing from non-holdout cell lines: {missing_test_in_other}")
 
 train_mask = (
     other_mask
@@ -96,6 +120,11 @@ train_mask = (
     | (holdout_mask & (adata.obs["target_gene"] == "non-targeting"))
 )
 test_mask = holdout_mask & adata.obs["target_gene"].isin(test_perts)
+
+print(f"LOCO Split ({HOLDOUT}):")
+print(f"  Eligible perturbations (in both holdout & other): {len(pert_targets)}")
+print(f"  Train perturbations (30%): {len(train_perts)}")
+print(f"  Test perturbations (30%): {len(test_perts)}")
 
 adata_train = adata[train_mask].copy()
 adata_test = adata[test_mask].copy()
@@ -115,8 +144,24 @@ adata_train = stratified_subsample(adata_train, TRAIN_FRACTION, rng)
 adata_test = stratified_subsample(adata_test, TEST_FRACTION, rng)
 
 print(f"Train: {adata_train.n_obs} cells, Test: {adata_test.n_obs} cells")
-print(f"Train perturbations: {adata_train.obs['target_gene'].nunique()}")
-print(f"Test perturbations (unseen): {adata_test.obs['target_gene'].nunique()}")
+train_holdout_perts_seen = set(
+    adata_train.obs.loc[
+        (adata_train.obs["cell_type"] == HOLDOUT) & (~adata_train.obs["control"]),
+        "target_gene",
+    ].astype(str)
+)
+test_perts_after_subsample = set(adata_test.obs["target_gene"].astype(str).unique())
+if not test_perts_after_subsample <= other_targets:
+    raise AssertionError("Every test perturbation gene must be observed in non-holdout training cell lines.")
+if test_perts_after_subsample & train_holdout_perts_seen:
+    raise AssertionError("Test perturbation responses leaked into the held-out cell line training subset.")
+if not ((adata_train.obs["cell_type"] == HOLDOUT) & adata_train.obs["control"]).any():
+    raise AssertionError(f"Training set must include {HOLDOUT} control/basal cells.")
+
+train_pert_count = adata_train[~adata_train.obs["control"]].obs["target_gene"].nunique()
+test_pert_count = adata_test.obs["target_gene"].nunique()
+print(f"Train perturbation genes: {train_pert_count}")
+print(f"Test perturbation genes: {test_pert_count} seen in other cell lines, held out in {HOLDOUT}")
 
 # ===================== Prepare GEARS-format AnnData =====================
 # GEARS needs: obs['condition'] with 'ctrl'/'GENE+ctrl' format, obs['cell_type'], var['gene_name']
@@ -129,9 +174,7 @@ def prepare_gears_adata(adata_in):
         return f"{row['target_gene']}+ctrl"
     adata_g.obs["condition"] = adata_g.obs.apply(make_condition, axis=1)
     adata_g.var["gene_name"] = adata_g.var_names
-    # Normalize
-    sc.pp.normalize_total(adata_g)
-    sc.pp.log1p(adata_g)
+    # Note: Data is already normalized (log1p) in the input h5ad file.
     return adata_g
 
 adata_train_gears = prepare_gears_adata(adata_train)
@@ -194,7 +237,7 @@ pert_data.get_dataloader(batch_size=32, test_batch_size=128)
 device = "cuda" if torch.cuda.is_available() else "cpu"
 gears_model = GEARS(pert_data, device=device)
 gears_model.model_initialize(hidden_size=64)
-gears_model.train(epochs=20, lr=1e-3)
+gears_model.train(epochs=40, lr=1e-3)
 
 # Save model
 model_save_path = str(OUTPUT_DIR / "gears_model")
@@ -209,9 +252,11 @@ print(f"Predicting {len(test_pert_list)} perturbations...")
 preds = gears_model.predict(test_pert_list)
 
 # Build predicted AnnData
-ctrl_adata = adata_train[adata_train.obs["control"]].copy()
-sc.pp.normalize_total(ctrl_adata)
-sc.pp.log1p(ctrl_adata)
+ctrl_adata = adata_train[
+    (adata_train.obs["control"]) & (adata_train.obs["cell_type"] == HOLDOUT)
+].copy()
+if ctrl_adata.n_obs == 0:
+    raise RuntimeError(f"No {HOLDOUT} control/basal cells found for prediction/evaluation.")
 
 all_X = []
 all_obs = []
@@ -229,6 +274,8 @@ for pert_name, pred_expr in preds.items():
     all_obs.extend([pert_name] * n_cells)
 
 pred_X = np.vstack(all_X)
+pred_X = np.clip(pred_X, 0, None)
+
 pred_obs = pd.DataFrame({"perturbation": all_obs})
 adata_pred = ad.AnnData(X=pred_X, obs=pred_obs, var=adata_train_gears.var.copy())
 

@@ -9,7 +9,7 @@ import numpy as np, pandas as pd, torch, scanpy as sc, anndata as ad
 from pathlib import Path
 from datetime import datetime
 
-GEARS_ROOT = Path(__file__).resolve().parent.parent / "GEARS-backup"
+GEARS_ROOT = Path(__file__).resolve().parent.parent / "GEARS-main"
 sys.path.insert(0, str(GEARS_ROOT))
 from gears import PertData, GEARS
 
@@ -107,9 +107,9 @@ adata_train_full.obs["condition_gears"] = adata_train_full.obs.apply(make_gears_
 adata_test_holdout.obs["condition_gears"] = adata_test_holdout.obs.apply(make_gears_condition, axis=1)
 
 adata_train_g = adata_train_full.copy()
-sc.pp.normalize_total(adata_train_g); sc.pp.log1p(adata_train_g)
+# sc.pp.normalize_total(adata_train_g); sc.pp.log1p(adata_train_g)
 adata_test_g = adata_test_holdout.copy()
-sc.pp.normalize_total(adata_test_g); sc.pp.log1p(adata_test_g)
+# sc.pp.normalize_total(adata_test_g); sc.pp.log1p(adata_test_g)
 
 adata_train_g.obs["condition"] = adata_train_g.obs["condition_gears"]
 adata_train_g.obs["cell_type"] = "K562"
@@ -132,6 +132,7 @@ if not sparse.issparse(adata_combined.X):
 # ===================== GEARS Pipeline =====================
 data_path = str(OUTPUT_DIR / "gears_data")
 pert_data = PertData(data_path)
+pert_data.default_pert_graph = False  # Use genes from data instead of default list to ensure all perturbations are covered
 pert_data.new_data_process(dataset_name="norman_gears", adata=adata_combined, skip_calc_de=False)
 pert_data.load(data_path=os.path.join(data_path, "norman_gears"))
 
@@ -173,7 +174,7 @@ print(f"Predicting {len(test_pert_list)} perturbations...")
 preds = gears_model.predict(test_pert_list)
 
 ctrl_adata = adata_train_full[adata_train_full.obs["is_control"]].copy()
-sc.pp.normalize_total(ctrl_adata); sc.pp.log1p(ctrl_adata)
+# sc.pp.normalize_total(ctrl_adata); sc.pp.log1p(ctrl_adata)
 
 all_X, all_obs = [], []
 for pert_name, pred_expr in preds.items():

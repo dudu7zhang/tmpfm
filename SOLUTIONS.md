@@ -8,13 +8,13 @@ scDFM 确实有 LOCO 数据，结果：
 
 ## 问题 2: 用户方法也用了 GO 图
 
-已确认：CellFlow-Gene2Vec 使用了 `x_graph_fusion`，包含：
+已确认：MyFlow-Gene2Vec 使用了 `x_graph_fusion`，包含：
 - gene2vec 嵌入
 - gene2go 图融合
 
 ## 问题 3: 数据被删除
 
-CellFlow-Gene2Vec 的输出数据被删除，需要重新运行。
+MyFlow-Gene2Vec 的输出数据被删除，需要重新运行。
 
 ## 问题 4: 修复 scDFM 评估问题
 
@@ -31,18 +31,18 @@ CellFlow-Gene2Vec 的输出数据被删除，需要重新运行。
 
 ## 问题 5: DES 指标分析
 
-### 为什么 CellFlow-Gene2Vec 整体精度高但 DES 低？
+### 为什么 MyFlow-Gene2Vec 整体精度高但 DES 低？
 
 **核心问题**：DES 基于 t-test 检测 DE 基因，对数据方差敏感。
 
 | 方法 | MSE | Pearson Δ | DES Recall | 方差比 |
 |------|-----|-----------|------------|--------|
 | GEARS | 0.020 | 0.131 | **0.297** | ~1.0 |
-| CellFlow-Gene2Vec | **0.002** | **0.746** | 0.001 | ~0.01 |
+| MyFlow-Gene2Vec | **0.002** | **0.746** | 0.001 | ~0.01 |
 
 **关键发现**：
 - GEARS 的预测方差接近真实数据，所以 t-test 能检测到 DE 基因
-- CellFlow-Gene2Vec 的预测方差太低，t-test 无法检测到显著差异
+- MyFlow-Gene2Vec 的预测方差太低，t-test 无法检测到显著差异
 
 ### 解决方案：DES 后处理
 
@@ -62,7 +62,7 @@ pred_processed = postprocess_for_des(pred, ctrl, real,
 
 ## 下一步行动
 
-### 1. 重新运行 CellFlow-Gene2Vec 实验
+### 1. 重新运行 MyFlow-Gene2Vec 实验
 ```bash
 ./fix_and_rerun.sh
 ```
@@ -83,7 +83,7 @@ python postprocess_des.py
 | 方法 | 原始 DES Recall | 修复后 DES Recall |
 |------|-----------------|-------------------|
 | scDFM | 0.0000 | ~0.15-0.25 |
-| CellFlow-Gene2Vec | 0.0012 | ~0.10-0.20 |
+| MyFlow-Gene2Vec | 0.0012 | ~0.10-0.20 |
 
 ## 文件说明
 
