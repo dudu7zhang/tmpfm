@@ -383,6 +383,7 @@ class ConditionalVelocityField(nn.Module):
             if not squeeze and go_cond.shape[0] != x_t.shape[0]:
                 go_cond = jnp.tile(go_cond, (x_t.shape[0], 1, 1))
             pert_idx = go_cond_source.get("gene_perturbation_indices")
+            go_valid_gate = None
             if pert_idx is not None:
                 pert_idx = pert_idx.astype(jnp.int32)
                 if pert_idx.ndim == 1:
@@ -390,6 +391,7 @@ class ConditionalVelocityField(nn.Module):
                 if not squeeze and pert_idx.shape[0] != x_t.shape[0]:
                     pert_idx = jnp.tile(pert_idx, (x_t.shape[0], 1, 1))
                 pert_idx = jnp.squeeze(pert_idx, axis=-1) if pert_idx.ndim == 3 else pert_idx
+                go_valid_gate = (jnp.any(pert_idx >= 0, axis=-1)).astype(x_t.dtype)
             rho = self.go_response_prior(go_cond, deterministic=not train, perturb_indices=pert_idx)
 
             x_gene = jnp.expand_dims(x_t, -1)
@@ -412,6 +414,8 @@ class ConditionalVelocityField(nn.Module):
 
             go_residual = dynamic_gate * self.go_residual_head(h)
             go_residual = jnp.squeeze(go_residual, axis=-1)
+            if go_valid_gate is not None:
+                go_residual = go_residual * go_valid_gate[:, None]
             velocity = velocity_base + go_residual
             if squeeze:
                 velocity = jnp.squeeze(velocity, 0)
@@ -424,6 +428,7 @@ class ConditionalVelocityField(nn.Module):
             if not squeeze and pert_cond.shape[0] != x_t.shape[0]:
                 pert_cond = jnp.tile(pert_cond, (x_t.shape[0], 1, 1))
             pert_idx = go_cond_source.get("gene_perturbation_indices")
+            pert_valid_gate = None
             if pert_idx is not None:
                 pert_idx = pert_idx.astype(jnp.int32)
                 if pert_idx.ndim == 1:
@@ -431,6 +436,7 @@ class ConditionalVelocityField(nn.Module):
                 if not squeeze and pert_idx.shape[0] != x_t.shape[0]:
                     pert_idx = jnp.tile(pert_idx, (x_t.shape[0], 1, 1))
                 pert_idx = jnp.squeeze(pert_idx, axis=-1) if pert_idx.ndim == 3 else pert_idx
+                pert_valid_gate = (jnp.any(pert_idx >= 0, axis=-1)).astype(x_t.dtype)
             rho_pert = self.pert_graph_prior(pert_cond, deterministic=not train, perturb_indices=pert_idx)
 
             x_gene_pert = jnp.expand_dims(x_t, -1) if x_t.ndim == 1 else jnp.expand_dims(x_t, -1)
@@ -453,6 +459,8 @@ class ConditionalVelocityField(nn.Module):
 
             pert_residual = dynamic_gate_pert * self.pert_residual_head(h_pert)
             pert_residual = jnp.squeeze(pert_residual, axis=-1)
+            if pert_valid_gate is not None:
+                pert_residual = pert_residual * pert_valid_gate[:, None]
             velocity = velocity_for_pert + pert_residual
             if squeeze:
                 velocity = jnp.squeeze(velocity, 0)

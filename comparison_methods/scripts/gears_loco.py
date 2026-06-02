@@ -7,6 +7,7 @@ import sys
 import os
 import json
 import random
+import shutil
 import numpy as np
 import pandas as pd
 import torch
@@ -202,6 +203,11 @@ if not sparse.issparse(adata_combined.X):
 
 # ===================== GEARS Pipeline =====================
 data_path = str(OUTPUT_DIR / "gears_data")
+os.makedirs(data_path, exist_ok=True)
+# Pre-cache gene2go_all.pkl to avoid Harvard Dataverse download (no network)
+_local_gene2go = Path(__file__).resolve().parent.parent.parent / "data_gab" / "gene2go_all.pkl"
+if _local_gene2go.exists():
+    shutil.copy2(str(_local_gene2go), os.path.join(data_path, "gene2go_all.pkl"))
 pert_data = PertData(data_path)
 pert_data.default_pert_graph = False  # Use genes from data instead of default list to ensure all perturbations are covered
 pert_data.new_data_process(dataset_name="replogle_loco", adata=adata_combined, skip_calc_de=False)

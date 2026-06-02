@@ -10,10 +10,11 @@ Additive setting:
 """
 
 import argparse
+import csv
+import hashlib
 import json
 import os
 from pathlib import Path
-import re
 import random
 import sys
 
@@ -36,7 +37,6 @@ os.environ["CUDA_VISIBLE_DEVICES"] = _read_early_cli_option("--gpu-id", os.envir
 os.environ.setdefault("XLA_PYTHON_CLIENT_PREALLOCATE", "false")
 
 import anndata as ad
-import mygene
 import pandas as pd
 import torch
 import numpy as np
@@ -52,7 +52,6 @@ sys.path.insert(0, str(ROOT / "comparison_methods" / "scripts"))
 from split_utils import build_scdfm_norman_split
 from eval_utils import evaluate_predictions
 
-ENSG_PATTERN = re.compile(r"^ENSG\d+$", re.IGNORECASE)
 DEFAULT_SEED = 20240508
 
 
@@ -92,133 +91,122 @@ def cal_deg_metrics(ctrl_mean, real_mean, pred_mean, deg_indices):
 # ==============================================================================
 
 
-def _extract_ensembl_id(entry) -> str | None:
-    if entry is None:
-        return None
-    if isinstance(entry, list):
-        for item in entry:
-            if isinstance(item, dict) and "gene" in item:
-                val = str(item["gene"]).strip().upper()
-                if val:
-                    return val
-            elif isinstance(item, str):
-                val = item.strip().upper()
-                if val:
-                    return val
-        return None
-    if isinstance(entry, dict):
-        gene = entry.get("gene")
-        if gene is not None:
-            return str(gene).strip().upper()
-        return None
-    return str(entry).strip().upper()
 
 
-def build_symbol_to_ensembl(symbols: list[str]) -> dict[str, str]:
-    symbols = [str(s).strip() for s in symbols]
-    unique_symbols = list(dict.fromkeys(symbols))
-    symbol_to_ensembl: dict[str, str] = {}
-
-    already_ensg = [s for s in unique_symbols if ENSG_PATTERN.match(s)]
-    for s in already_ensg:
-        symbol_to_ensembl[s] = s.upper()
-
-    unresolved = [s for s in unique_symbols if s not in symbol_to_ensembl]
-    if unresolved:
-        mg = mygene.MyGeneInfo()
-        import time
-        query = []
-        for attempt in range(3):
-            try:
-                query = mg.querymany(
-                    unresolved,
-                    scopes="symbol,alias",
-                    fields="ensembl.gene",
-                    species="human",
-                    as_dataframe=False,
-                    returnall=False,
-                    verbose=False,
-                )
-                break
-            except Exception as e:
-                print(f"Network error querying MyGene (attempt {attempt + 1}): {e}")
-                if attempt == 2:
-                    raise e
-                time.sleep(2)
-        for row in query:
-            q = str(row.get("query", "")).strip()
-            ensembl_id = _extract_ensembl_id(row.get("ensembl"))
-            if q and ensembl_id:
-                symbol_to_ensembl[q] = ensembl_id
-    return symbol_to_ensembl
+def load_gene2vec_dict(path: Path) -> dict[str, np.ndarray]:
+    raw = torch.load(str(path), map_location="cpu")
+    if not isinstance(raw, dict):
+        raise TypeError(f"Expected gene2vec dict at {path}, got {type(raw)!r}")
+    out: dict[str, np.ndarray] = {}
+    for key, value in raw.items():
+        arr = value.detach().cpu().numpy() if torch.is_tensor(value) else np.asarray(value)
+        arr = arr.astype(np.float32, copy=False).reshape(-1)
+        if arr.size:
+            out[str(key).strip().upper()] = arr
+    if not out:
+        raise ValueError(f"No usable gene2vec entries found in {path}")
+    dims = {v.shape[0] for v in out.values()}
+    if len(dims) != 1:
+        raise ValueError(f"Inconsistent gene2vec dimensions in {path}: {sorted(dims)[:5]}")
+    return out
 
 
-def align_adata_to_selected_ensembl(
-    adata: ad.AnnData,
-    symbol_to_ensembl: dict[str, str],
-) -> ad.AnnData:
-    original_symbols = [str(g).strip() for g in adata.var_names]
-    mapped_ids = [symbol_to_ensembl.get(s, s).upper() for s in original_symbols]
-
-    keep_idx = []
-    seen: set[str] = set()
-    for i, gid in enumerate(mapped_ids):
-        if gid in seen:
-            continue
-        seen.add(gid)
-        keep_idx.append(i)
-
-    if not keep_idx:
-        raise ValueError("No valid genes left.")
-
-    adata = adata[:, keep_idx].copy()
-    kept_ids = [mapped_ids[i] for i in keep_idx]
-    kept_symbols = [original_symbols[i] for i in keep_idx]
-    adata.var["gene_symbol"] = kept_symbols
-    adata.var_names = kept_ids
-
-    return adata
-
-
-def build_matched_gene2vec(
-    selected_gene_ids_file: Path,
-    selected_gene2vec_file: Path,
-    ordered_ids: list[str],
+def build_matched_gene2vec_from_dict(
+    gene2vec: dict[str, np.ndarray],
+    ordered_genes: list[str],
     save_dir: Path,
+    cache_dir: Path | None = None,
+    cache_prefix: str = "norman_symbol",
+    label: str = "expression genes",
 ) -> tuple[Path, Path]:
-    with open(selected_gene_ids_file, "r", encoding="utf-8") as f:
-        all_ids = [line.strip().upper() for line in f if line.strip()]
-    id_to_idx = {g: i for i, g in enumerate(all_ids)}
-    full_vec = np.load(selected_gene2vec_file)
-    dim = full_vec.shape[1]
+    ordered = [str(g).strip().upper() for g in ordered_genes]
+    digest = hashlib.sha1("\n".join(ordered).encode("utf-8")).hexdigest()[:16]
+    if cache_dir is not None:
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        cached_ids = cache_dir / f"{cache_prefix}_gene_ids_{digest}.txt"
+        cached_vec = cache_dir / f"{cache_prefix}_gene2vec_{digest}.npy"
+        if cached_ids.exists() and cached_vec.exists():
+            print(f"Using cached matched symbol gene2vec: {cached_vec}")
+            return cached_ids, cached_vec
 
-    matched_vecs = []
-    for g in ordered_ids:
-        if g in id_to_idx:
-            matched_vecs.append(full_vec[id_to_idx[g]].astype(np.float32))
-        else:
-            matched_vecs.append(np.zeros(dim, dtype=np.float32))
+    dim = next(iter(gene2vec.values())).shape[0]
+    vectors = [gene2vec.get(g, np.zeros(dim, dtype=np.float32)) for g in ordered]
+    matched_vec = np.stack(vectors).astype(np.float32, copy=False)
 
-    matched_vec = np.stack(matched_vecs)
+    gene_ids_out = (
+        cache_dir / f"{cache_prefix}_gene_ids_{digest}.txt"
+        if cache_dir is not None
+        else save_dir / "symbol_gene_ids_matched.txt"
+    )
+    gene2vec_out = (
+        cache_dir / f"{cache_prefix}_gene2vec_{digest}.npy"
+        if cache_dir is not None
+        else save_dir / "symbol_gene2vec_matched.npy"
+    )
 
-    save_dir.mkdir(parents=True, exist_ok=True)
-    gene_ids_out = save_dir / "selected_gene_ids_matched.txt"
-    gene2vec_out = save_dir / "selected_gene2vec_matched.npy"
-
+    gene_ids_out.parent.mkdir(parents=True, exist_ok=True)
     with open(gene_ids_out, "w", encoding="utf-8") as f:
-        for g in ordered_ids:
+        for g in ordered:
             f.write(f"{g}\n")
     np.save(gene2vec_out, matched_vec)
+    missing = sum(1 for gene in ordered if gene not in gene2vec)
+    if missing:
+        print(f"Warning: {missing}/{len(ordered)} {label} missing from symbol gene2vec dict; using zero vectors.")
 
     return gene_ids_out, gene2vec_out
+
+
+def build_symbol_go_graph_from_edge_file(
+    source_graph_file: Path,
+    genes: list[str],
+    save_dir: Path,
+    cache_dir: Path | None = None,
+    cache_prefix: str = "norman_symbol_txpert",
+) -> Path:
+    ordered = [str(g).strip().upper() for g in genes]
+    gene_set = set(ordered)
+    with open(source_graph_file, "rb") as f:
+        source_digest = hashlib.sha1(f.read()).hexdigest()[:16]
+    digest = hashlib.sha1(
+        ("\n".join(ordered) + f"\n{source_graph_file}\n{source_digest}").encode("utf-8")
+    ).hexdigest()[:16]
+    out_file = (
+        cache_dir / f"{cache_prefix}_go_graph_{digest}.csv"
+        if cache_dir is not None
+        else save_dir / f"{cache_prefix}_go_graph.csv"
+    )
+    if out_file.exists():
+        print(f"Using cached TxPert GO graph: {out_file}")
+        return out_file
+
+    n_edges = 0
+    out_file.parent.mkdir(parents=True, exist_ok=True)
+    with open(source_graph_file, "r", encoding="utf-8") as src_f, open(
+        out_file, "w", encoding="utf-8", newline=""
+    ) as out_f:
+        reader = csv.DictReader(src_f)
+        writer = csv.DictWriter(out_f, fieldnames=["source", "target", "importance"])
+        writer.writeheader()
+        for row in reader:
+            src = str(row.get("source", "")).strip().upper()
+            tgt = str(row.get("target", "")).strip().upper()
+            if src in gene_set and tgt in gene_set:
+                writer.writerow(
+                    {
+                        "source": src,
+                        "target": tgt,
+                        "importance": float(row.get("importance", 1.0)),
+                    }
+                )
+                n_edges += 1
+    print(f"Wrote TxPert GO graph subset: {out_file} ({n_edges} edges, {len(gene_set)} genes)")
+    return out_file
 
 
 def set_global_seed(seed: int) -> None:
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
-    if torch.cuda.is_available():
-        torch.cuda.manual_seed_all(seed)
     torch.backends.cudnn.benchmark = False
     torch.backends.cudnn.deterministic = True
 
@@ -293,15 +281,12 @@ def _build_norman_gene_tokens(
     gene2vec_dict: dict[str, np.ndarray],
     embedding_dim: int,
     max_genes: int = 2,
-) -> tuple[dict[str, list[str]], dict[str, np.ndarray], dict[str, str]]:
+) -> tuple[dict[str, list[str]], dict[str, np.ndarray]]:
     """Build per-gene condition tokens for Norman combinatorial perturbations.
 
-    Each condition is represented by up to two gene tokens. Gene symbols are
-    converted to Ensembl IDs before gene2vec lookup, because the bundled
-    selected_gene2vec_27k dictionary is keyed by Ensembl IDs.
+    Each condition is represented by up to two gene-symbol tokens.
     """
-    unique_symbols = sorted({g for cond in conditions for g in _parse_condition_genes(cond)})
-    symbol_to_ensembl = build_symbol_to_ensembl(unique_symbols) if unique_symbols else {}
+    unique_symbols = sorted({g.upper() for cond in conditions for g in _parse_condition_genes(cond)})
 
     token_to_vec: dict[str, np.ndarray] = {
         "ctrl": np.zeros(embedding_dim, dtype=np.float32),
@@ -310,12 +295,11 @@ def _build_norman_gene_tokens(
     missing_symbols: list[str] = []
 
     for symbol in unique_symbols:
-        ensembl = symbol_to_ensembl.get(symbol, "").upper()
-        if ensembl and ensembl in gene2vec_dict:
-            symbol_to_token[symbol] = ensembl
-            token_to_vec[ensembl] = gene2vec_dict[ensembl].astype(np.float32)
+        if symbol in gene2vec_dict:
+            symbol_to_token[symbol] = symbol
+            token_to_vec[symbol] = gene2vec_dict[symbol].astype(np.float32)
         else:
-            token = f"missing::{symbol.upper()}"
+            token = f"missing::{symbol}"
             symbol_to_token[symbol] = token
             token_to_vec[token] = np.zeros(embedding_dim, dtype=np.float32)
             missing_symbols.append(symbol)
@@ -324,13 +308,13 @@ def _build_norman_gene_tokens(
         preview = ", ".join(missing_symbols[:20])
         suffix = "..." if len(missing_symbols) > 20 else ""
         print(
-            f"  Warning: {len(missing_symbols)} perturbation genes could not be mapped to gene2vec "
-            f"after symbol->Ensembl conversion: {preview}{suffix}. Using zero vectors for them."
+            f"  Warning: {len(missing_symbols)} perturbation gene symbols are missing from gene2vec: "
+            f"{preview}{suffix}. Using zero vectors for them."
         )
 
     condition_to_tokens: dict[str, list[str]] = {}
     for condition in conditions:
-        symbols = sorted(_parse_condition_genes(condition))
+        symbols = sorted(g.upper() for g in _parse_condition_genes(condition))
         if len(symbols) > max_genes:
             print(f"  Warning: condition '{condition}' has >{max_genes} genes; truncating extras.")
             symbols = symbols[:max_genes]
@@ -338,7 +322,7 @@ def _build_norman_gene_tokens(
         tokens.extend(["ctrl"] * (max_genes - len(tokens)))
         condition_to_tokens[str(condition)] = tokens
 
-    return condition_to_tokens, token_to_vec, symbol_to_ensembl
+    return condition_to_tokens, token_to_vec
 
 
 def parse_args():
@@ -357,8 +341,8 @@ def parse_args():
     p.add_argument("--batch-size", type=int, default=256)
     p.add_argument("--predict-batch-size", type=int, default=256)
     p.add_argument("--skip-prediction", action="store_true")
-    p.add_argument("--output-dir", default="results/outputs/outputs_norman_scdfm_additive")
-    p.add_argument("--run-name", default="norman_scdfm_additive")
+    p.add_argument("--output-dir", default="results/outputs/outputs_myflow_norman_additive")
+    p.add_argument("--run-name", default="myflow_norman_additive")
     p.add_argument("--gpu-id", default=os.environ.get("CUDA_VISIBLE_DEVICES", "1"))
     p.add_argument("--solver", choices=["otfm", "genot"], default="otfm")
     p.add_argument("--seed", type=int, default=DEFAULT_SEED)
@@ -379,6 +363,11 @@ def parse_args():
     )
     p.add_argument("--condition-combined-loss-weight", type=float, default=0.0)
     p.add_argument("--endpoint-mse-weight", type=float, default=1.0, help="Weight for direct endpoint MSE loss (no stop_gradient).")
+    p.add_argument("--condition-mean-delta-weight", type=float, default=0.0, help="Weight for condition-level mean delta supervision.")
+    p.add_argument("--high-delta-endpoint-weight", type=float, default=0.0, help="Extra endpoint/mean-loss weight on genes with large true condition delta.")
+    p.add_argument("--high-delta-max-weight", type=float, default=4.0, help="Maximum per-gene multiplier used by high-delta endpoint/mean losses.")
+    p.add_argument("--terminal-loss-time-power", type=float, default=2.0, help="Power for terminal-loss time gate t^p; larger values focus endpoint-style losses closer to t=1.")
+    p.add_argument("--cosine-loss-weight", type=float, default=0.0, help="Weight for cosine similarity loss on delta direction.")
     p.add_argument("--learning-rate", type=float, default=5e-4, help="Base learning rate for Adam optimizer.")
     p.add_argument("--hidden-dims", type=int, nargs="+", default=[512, 512, 512])
     p.add_argument("--decoder-dims", type=int, nargs="+", default=[1024, 1024, 1024])
@@ -388,6 +377,21 @@ def parse_args():
     p.add_argument("--go-response-top-k", type=int, default=20, help="Top GO-similar incoming neighbors per gene.")
     p.add_argument("--go-response-rho-dim", type=int, default=128, help="GO response prior feature dimension.")
     p.add_argument("--go-response-weight-power", type=float, default=1.5, help="Sharpen GO similarity weights before normalization.")
+    p.add_argument(
+        "--cache-dir",
+        default=str(ROOT / "data_train" / "myflow_cache" / "norman"),
+        help="Directory for reusable symbol gene2vec and GO graph side inputs.",
+    )
+    p.add_argument(
+        "--gene2vec-dict",
+        default=str(ROOT / "data_gab" / "gene2vec_dict.pt"),
+        help="Symbol-keyed gene2vec dictionary.",
+    )
+    p.add_argument(
+        "--go-graph-file",
+        default=str(ROOT / "comparison_methods" / "TxPert-main" / "data" / "graphs" / "go" / "go_top_50.csv"),
+        help="TxPert GO graph CSV with source,target,importance columns.",
+    )
     return p.parse_args()
 
 
@@ -399,6 +403,9 @@ def main():
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     run_label = args.run_name or timestamp
     out_dir = Path(args.output_dir)
+    _run_id = os.environ.get("MYFLOW_RUN_ID")
+    if _run_id:
+        out_dir = out_dir.with_name(f"{out_dir.name}_{_run_id}")
     out_dir.mkdir(parents=True, exist_ok=True)
     write_json(
         out_dir / f"experiment_config_{run_label}.json",
@@ -442,19 +449,16 @@ def main():
     print(f"Current Obs shape: {adata.n_obs}")
     print(f"Current Var shape: {adata.n_vars}")
 
-    # ==================== Build gene2vec perturbation embeddings ====================
-    g2v_path = "/home/zhangshibo24s/cell_flow/data_train/selected_gene2vec_27k.npy"
-    g2v_genes_path = "/home/zhangshibo24s/cell_flow/data_train/selected_genes_27k.txt"
-
-    g2v_array = np.load(g2v_path)
-    with open(g2v_genes_path, "r") as f:
-        g2v_genes = [line.strip() for line in f.readlines()]
-    gene2vec_dict = {gene.upper(): vec.astype(np.float32) for gene, vec in zip(g2v_genes, g2v_array)}
-    embedding_dim = g2v_array.shape[1]
-    print(f"Loaded gene2vec: {len(g2v_genes)} genes, dim={embedding_dim}")
+    # ==================== Build symbol-keyed gene2vec perturbation embeddings ====================
+    gene2vec_dict = load_gene2vec_dict(Path(args.gene2vec_dict))
+    go_graph_source_file = Path(args.go_graph_file)
+    if not go_graph_source_file.exists():
+        raise FileNotFoundError(f"TxPert GO graph file not found: {go_graph_source_file}")
+    embedding_dim = next(iter(gene2vec_dict.values())).shape[0]
+    print(f"Loaded symbol gene2vec: {len(gene2vec_dict)} genes, dim={embedding_dim}")
 
     unique_conditions = adata.obs["condition"].drop_duplicates().astype(str).tolist()
-    condition_to_tokens, pert_emb, pert_symbol_to_ensembl = _build_norman_gene_tokens(
+    condition_to_tokens, pert_emb = _build_norman_gene_tokens(
         conditions=unique_conditions,
         gene2vec_dict=gene2vec_dict,
         embedding_dim=embedding_dim,
@@ -470,7 +474,6 @@ def main():
 
     rep_key = "gene2vec_pert_gene_tokens"
     adata.uns[rep_key] = pert_emb
-    adata.uns["norman_perturbation_symbol_to_ensembl"] = pert_symbol_to_ensembl
     adata.uns["norman_condition_to_gene_tokens"] = condition_to_tokens
 
     # Filter to cells whose condition was parsed successfully.
@@ -482,21 +485,61 @@ def main():
         adata = adata[valid_mask].copy()
     print(f"Cells after embedding filter: {adata.n_obs}")
 
-    # Gene alignment
-    selected_gene_ids_file = ROOT / "data_train" / "selected_genes_27k.txt"
-    selected_gene2vec_file = ROOT / "data_train" / "selected_gene2vec_27k.npy"
-    gene2go_graph_file = ROOT / "data_train" / "human_ens_gene2go_graph.csv"
+    # Symbol gene alignment for side inputs. Expression var_names are kept
+    # unchanged for evaluation; only side-input tables use gene symbols.
+    print("Using var['gene_name'] symbols for GO/gene2vec side inputs; keeping expression var_names unchanged.")
+    if "gene_name" in adata.var:
+        adata.var["gene_symbol"] = adata.var["gene_name"].astype(str).values
+        ordered_gene_symbols = adata.var["gene_name"].astype(str).str.upper().tolist()
+    else:
+        ordered_gene_symbols = [str(g).upper() for g in adata.var_names]
 
-    print("Mapping var_names to Ensembl IDs via mygene...")
-    symbol_to_ensembl = build_symbol_to_ensembl([str(g) for g in adata.var_names])
-    adata = align_adata_to_selected_ensembl(adata=adata, symbol_to_ensembl=symbol_to_ensembl)
+    # Deduplicate expression columns only if the side-input gene symbols are duplicated,
+    # while preserving the original expression namespace in adata.var_names.
+    seen: set[str] = set()
+    keep_idx = []
+    for i, symbol in enumerate(ordered_gene_symbols):
+        if symbol in seen:
+            continue
+        seen.add(symbol)
+        keep_idx.append(i)
+    if len(keep_idx) != adata.n_vars:
+        adata = adata[:, keep_idx].copy()
+        ordered_gene_symbols = [ordered_gene_symbols[i] for i in keep_idx]
 
-    matched_ids_file, matched_gene2vec_file = build_matched_gene2vec(
-        selected_gene_ids_file=selected_gene_ids_file,
-        selected_gene2vec_file=selected_gene2vec_file,
-        ordered_ids=[str(g).upper() for g in adata.var_names],
+    cache_dir = Path(args.cache_dir)
+    matched_ids_file, matched_gene2vec_file = build_matched_gene2vec_from_dict(
+        gene2vec=gene2vec_dict,
+        ordered_genes=ordered_gene_symbols,
         save_dir=out_dir,
+        cache_dir=cache_dir,
+        cache_prefix="norman_symbol",
+        label="Norman expression genes",
     )
+    gene2go_graph_file = build_symbol_go_graph_from_edge_file(
+        source_graph_file=go_graph_source_file,
+        genes=ordered_gene_symbols,
+        save_dir=out_dir,
+        cache_dir=cache_dir,
+        cache_prefix="norman_symbol_txpert",
+    )
+    # DataManager stores these indices in each condition batch.  The GO prior
+    # consumes them as row indices into the matched expression-gene table, not
+    # as arbitrary perturbation-token IDs.
+    expr_gene_to_idx = {symbol: i for i, symbol in enumerate(ordered_gene_symbols)}
+    adata.uns["perturb_gene_symbol_to_idx"] = {
+        token: expr_gene_to_idx[token]
+        for token in pert_emb
+        if token != "ctrl" and token in expr_gene_to_idx
+    }
+    missing_token_indices = sum(
+        1 for token in pert_emb if token != "ctrl" and token not in expr_gene_to_idx
+    )
+    if missing_token_indices:
+        print(
+            f"  Warning: {missing_token_indices} perturbation tokens are absent from matched expression genes; "
+            "their graph-prior index will be -1."
+        )
     print(f"Aligned genes: {adata.n_vars}")
 
     # Perturbation covariates
@@ -665,6 +708,11 @@ def main():
             "condition_combined_loss_weight": args.condition_combined_loss_weight,
             "match_every_n": args.match_every_n,
             "endpoint_mse_weight": args.endpoint_mse_weight,
+            "condition_mean_delta_weight": args.condition_mean_delta_weight,
+            "high_delta_endpoint_weight": args.high_delta_endpoint_weight,
+            "high_delta_max_weight": args.high_delta_max_weight,
+            "terminal_loss_time_power": args.terminal_loss_time_power,
+            "cosine_loss_weight": args.cosine_loss_weight,
         },
     )
     print(f"Start training: iterations={args.num_iterations}, batch_size={args.batch_size}")
@@ -749,9 +797,7 @@ def main():
     X = np.vstack(all_X)
     obs = pd.concat(all_obs, ignore_index=True)
     adata_pred = ad.AnnData(X=X, obs=obs, var=adata.var.copy())
-    pred_dir = Path(args.output_dir) / f"predictions_{run_label}"
-    pred_dir.mkdir(parents=True, exist_ok=True)
-    out_file = pred_dir / f"predictions_{run_label}.h5ad"
+    out_file = out_dir / f"predictions_{run_label}.h5ad"
     adata_pred.write_h5ad(out_file)
     print(f"Saved prediction file: {out_file}")
 
@@ -759,7 +805,7 @@ def main():
     ctrl_eval = ad.concat(prediction_controls, join="outer") if len(prediction_controls) > 1 else prediction_controls[0]
     evaluate_predictions(
         ctrl_eval, adata_test_additive, adata_pred,
-        str(out_dir / f"myflow_norman_additive_{run_label}"),
+        str(out_dir / run_label),
         real_condition_key="condition",
     )
     print("=" * 50)

@@ -13,7 +13,6 @@ import hashlib
 import heapq
 import json
 import os
-import pickle
 from pathlib import Path
 import re
 import random
@@ -61,19 +60,25 @@ def cal_metric(pred_mean, real_mean):
     l2 = np.linalg.norm(real_mean - pred_mean)
     return mse, mae, l2
 
-def cal_delta_metric(ctrl_mean, real_mean, pred_mean, top_k=20):
+def cal_delta_metric(ctrl_mean, real_mean, pred_mean, top_k=20, ds_top_k=None, sign_eps=1e-8):
     delta_real = real_mean - ctrl_mean
     delta_pred = pred_mean - ctrl_mean
     pearson_delta, _ = scipy.stats.pearsonr(delta_real, delta_pred)
-    
+
     top_n_idx = np.argsort(np.abs(delta_real))[-top_k:]
     if len(top_n_idx) > 1:
         pearson_delta_top_k, _ = scipy.stats.pearsonr(delta_real[top_n_idx], delta_pred[top_n_idx])
     else:
         pearson_delta_top_k = 0.0
 
-    sign_real = np.sign(delta_real[top_n_idx])
-    sign_pred = np.sign(delta_pred[top_n_idx])
+    # DS is all-gene sign agreement by default.  A positive ds_top_k is kept
+    # only for backward-compatible ad-hoc analyses.
+    if ds_top_k is None or ds_top_k <= 0:
+        ds_idx = np.arange(delta_real.shape[0])
+    else:
+        ds_idx = np.argsort(np.abs(delta_real))[-ds_top_k:]
+    sign_real = np.where(np.abs(delta_real[ds_idx]) > sign_eps, np.sign(delta_real[ds_idx]), 0)
+    sign_pred = np.where(np.abs(delta_pred[ds_idx]) > sign_eps, np.sign(delta_pred[ds_idx]), 0)
     ds_score = np.mean([1 if r == p else 0 for r, p in zip(sign_real, sign_pred)])
     return pearson_delta, pearson_delta_top_k, ds_score
 
@@ -132,10 +137,48 @@ def cal_deg_metrics(ctrl_mean, real_mean, pred_mean, deg_indices):
     return {"r2_deg": float(r2), "ev_deg": float(ev), "pcc_deg": float(pcc)}
 
 
+def cal_deg_overlap_metrics(ctrl_mean, real_mean, pred_mean, threshold=2.0):
+    """Compute DEG overlap (precision/recall/F1/Jaccard) between pred-DEGs and real-DEGs."""
+    delta_real = real_mean - ctrl_mean
+    delta_pred = pred_mean - ctrl_mean
+
+    def _identify(delta):
+        median_d = np.median(delta)
+        mad = np.median(np.abs(delta - median_d)) * 1.4826
+        if mad < 1e-10:
+            mad = np.std(delta)
+        if mad < 1e-10:
+            return set()
+        z = np.abs(delta - median_d) / (mad + 1e-10)
+        return set(np.where(z > threshold)[0])
+
+    real_de = _identify(delta_real)
+    pred_de = _identify(delta_pred)
+    overlap = len(real_de & pred_de)
+    n_real = len(real_de)
+    n_pred = len(pred_de)
+    union = len(real_de | pred_de)
+
+    precision = overlap / n_pred if n_pred > 0 else 0.0
+    recall = overlap / n_real if n_real > 0 else 0.0
+    f1 = 2 * precision * recall / (precision + recall) if (precision + recall) > 0 else 0.0
+    jaccard = overlap / union if union > 0 else 0.0
+
+    return {
+        "deg_precision": float(precision),
+        "deg_recall": float(recall),
+        "deg_f1": float(f1),
+        "deg_jaccard": float(jaccard),
+        "n_real_degs": int(n_real),
+        "n_pred_degs": int(n_pred),
+        "n_overlap_degs": int(overlap),
+    }
+
+
 def compute_deg_metrics_per_condition(ctrl_adata, real_adata, pred_adata,
                                       real_condition_key="target_gene",
                                       pred_condition_key="perturbation"):
-    """Compute R², EV, PCC on DEG genes per condition."""
+    """Compute R², EV, PCC on DEG genes per condition, plus DEG overlap."""
     real_conditions = real_adata.obs[real_condition_key].unique()
     results = []
     for cond in real_conditions:
@@ -154,6 +197,10 @@ def compute_deg_metrics_per_condition(ctrl_adata, real_adata, pred_adata,
             pred_mean = np.array(pred_aligned.X.mean(axis=0)).flatten()
             deg_idx = identify_degs(ctrl_mean, real_mean)
             deg_metrics = cal_deg_metrics(ctrl_mean, real_mean, pred_mean, deg_idx)
+            deg_overlap = cal_deg_overlap_metrics(ctrl_mean, real_mean, pred_mean)
+
+            # Per-condition Direction Score: sign accuracy on the top-20 real delta genes
+            _, _, cond_ds = cal_delta_metric(ctrl_mean, real_mean, pred_mean, top_k=20)
 
             # DE Spearman: rank correlation of logFC on real DE genes
             de_spearman = float("nan")
@@ -170,15 +217,13 @@ def compute_deg_metrics_per_condition(ctrl_adata, real_adata, pred_adata,
                 real_sig_genes = set(real_de_genes[sig_mask])
 
                 if len(real_sig_genes) > 1:
-                    combined_pred = ctrl_aligned.concatenate(
-                        pred_aligned, batch_key="condition", batch_categories=["ctrl", "target"]
-                    )
-                    sc.tl.rank_genes_groups(
-                        combined_pred, groupby="condition", reference="ctrl", method="t-test"
-                    )
-                    all_pred_genes = np.array(combined_pred.uns["rank_genes_groups"]["names"]["target"])
-                    all_pred_logfc = np.array(combined_pred.uns["rank_genes_groups"]["logfoldchanges"]["target"])
-                    pred_logfc_map = dict(zip(all_pred_genes, all_pred_logfc))
+                    # Manual pred logFC: mean(pred) - mean(ctrl).
+                    # scanpy's rank_genes_groups gives wrong logFC for predicted data
+                    # because near-zero variance in predictions inflates the t-test.
+                    pred_logfc_arr = pred_mean - ctrl_mean
+                    pred_logfc_map = dict(zip(
+                        [str(v) for v in pred_aligned.var_names], pred_logfc_arr
+                    ))
 
                     real_logfc_map = dict(zip(
                         real_de_genes,
@@ -200,7 +245,9 @@ def compute_deg_metrics_per_condition(ctrl_adata, real_adata, pred_adata,
                 "condition": str(cond),
                 "n_degs": int(len(deg_idx)),
                 **deg_metrics,
+                **deg_overlap,
                 "de_spearman": de_spearman,
+                "condition_ds": float(cond_ds),
             })
         except Exception:
             continue
@@ -277,50 +324,50 @@ def build_matched_gene2vec_from_dict(
     return gene_ids_out, gene2vec_out
 
 
-def build_symbol_go_graph_from_gene2go(
-    gene2go_all_file: Path,
+def build_symbol_go_graph_from_edge_file(
+    source_graph_file: Path,
     genes: list[str],
     save_dir: Path,
     cache_dir: Path | None = None,
-    cache_prefix: str = "replogle_symbol",
-    threshold: float = 0.1,
+    cache_prefix: str = "replogle_symbol_txpert",
 ) -> Path:
-    ordered = [str(g).strip() for g in genes]
-    digest = hashlib.sha1(("\n".join(ordered) + f"\n{threshold}").encode("utf-8")).hexdigest()[:16]
+    ordered = [str(g).strip().upper() for g in genes]
+    gene_set = set(ordered)
+    with open(source_graph_file, "rb") as f:
+        source_digest = hashlib.sha1(f.read()).hexdigest()[:16]
+    digest = hashlib.sha1(
+        ("\n".join(ordered) + f"\n{source_graph_file}\n{source_digest}").encode("utf-8")
+    ).hexdigest()[:16]
     out_file = (
-        cache_dir / f"{cache_prefix}_go_graph_thr{str(threshold).replace('.', 'p')}_{digest}.csv"
+        cache_dir / f"{cache_prefix}_go_graph_{digest}.csv"
         if cache_dir is not None
         else save_dir / f"{cache_prefix}_go_graph.csv"
     )
     if out_file.exists():
-        print(f"Using cached symbol GO graph: {out_file}")
+        print(f"Using cached TxPert GO graph: {out_file}")
         return out_file
 
-    with open(gene2go_all_file, "rb") as f:
-        raw_gene2go = pickle.load(f)
-    gene2go_lookup = {str(k).upper(): set(v) for k, v in raw_gene2go.items()}
-    available = [(gene, gene2go_lookup[gene.upper()]) for gene in ordered if gene.upper() in gene2go_lookup]
-    if not available:
-        raise ValueError(f"No expression genes found in GEARS gene2go file: {gene2go_all_file}")
-
+    n_edges = 0
     out_file.parent.mkdir(parents=True, exist_ok=True)
-    with open(out_file, "w", encoding="utf-8", newline="") as f:
-        writer = csv.DictWriter(f, fieldnames=["source", "target", "importance"])
+    with open(source_graph_file, "r", encoding="utf-8") as src_f, open(
+        out_file, "w", encoding="utf-8", newline=""
+    ) as out_f:
+        reader = csv.DictReader(src_f)
+        writer = csv.DictWriter(out_f, fieldnames=["source", "target", "importance"])
         writer.writeheader()
-        n_edges = 0
-        for source, source_terms in available:
-            for target, target_terms in available:
-                union = source_terms | target_terms
-                if not union:
-                    continue
-                score = len(source_terms & target_terms) / len(union)
-                if score > threshold:
-                    writer.writerow({"source": source, "target": target, "importance": score})
-                    n_edges += 1
-    print(
-        f"Wrote symbol GO graph: {out_file} ({n_edges} edges, "
-        f"{len(available)}/{len(ordered)} genes with GO terms)"
-    )
+        for row in reader:
+            src = str(row.get("source", "")).strip().upper()
+            tgt = str(row.get("target", "")).strip().upper()
+            if src in gene_set and tgt in gene_set:
+                writer.writerow(
+                    {
+                        "source": src,
+                        "target": tgt,
+                        "importance": float(row.get("importance", 1.0)),
+                    }
+                )
+                n_edges += 1
+    print(f"Wrote TxPert GO graph subset: {out_file} ({n_edges} edges, {len(gene_set)} genes)")
     return out_file
 
 
@@ -337,9 +384,13 @@ def build_go_edge_cache(
         ids = [line.strip().upper() for line in f if line.strip()]
     ids = ids[:max_seq_len]
     ids_digest = hashlib.sha1("\n".join(ids).encode("utf-8")).hexdigest()[:16]
+    with open(gene2go_graph_file, "rb") as f:
+        graph_digest = hashlib.sha1(f.read()).hexdigest()[:16]
     power_tag = str(weight_power).replace(".", "p")
     cache_dir.mkdir(parents=True, exist_ok=True)
-    cache_file = cache_dir / f"{cache_prefix}_go_edges_n{max_seq_len}_top{top_k}_pow{power_tag}_{ids_digest}.npz"
+    cache_file = cache_dir / (
+        f"{cache_prefix}_go_edges_n{max_seq_len}_top{top_k}_pow{power_tag}_{ids_digest}_{graph_digest}.npz"
+    )
     if cache_file.exists():
         print(f"Using cached GO edge index: {cache_file}")
         return cache_file
@@ -391,6 +442,7 @@ def build_go_edge_cache(
                 "weight_power": float(weight_power),
                 "edge_count": int(src_arr.size),
                 "gene_ids_sha1": ids_digest,
+                "graph_sha1": graph_digest,
             },
             f,
             indent=2,
@@ -411,6 +463,7 @@ def build_ppi_edge_cache(
     """Build edge cache for perturbation-level PPI graph (STRING)."""
     import pandas as pd
 
+    perturb_genes = {str(g).strip().upper() for g in perturb_genes if str(g).strip()}
     with open(gene_ids_file, "r", encoding="utf-8") as f:
         ids = [line.strip().upper() for line in f if line.strip()]
     ids = ids[:max_seq_len]
@@ -425,32 +478,40 @@ def build_ppi_edge_cache(
     id_to_idx = {gid: i for i, gid in enumerate(ids)}
     perturb_indices = {id_to_idx[g] for g in perturb_genes if g in id_to_idx}
 
-    df = pd.read_parquet(ppi_file)
-    edge_src: list[int] = []
-    edge_tgt: list[int] = []
-    edge_w: list[float] = []
-    for _, row in df.iterrows():
-        src_gene = str(row.get("regulator", "")).upper()
-        tgt_gene = str(row.get("target", "")).upper()
-        if src_gene not in id_to_idx or tgt_gene not in id_to_idx:
-            continue
-        src_idx = id_to_idx[src_gene]
-        tgt_idx = id_to_idx[tgt_gene]
-        if src_idx not in perturb_indices or tgt_idx not in perturb_indices:
-            continue
-        weight = float(row.get("weight", 1.0))
-        edge_src.append(src_idx)
-        edge_tgt.append(tgt_idx)
-        edge_w.append(weight)
-
-    src_arr = np.asarray(edge_src, dtype=np.int32)
-    tgt_arr = np.asarray(edge_tgt, dtype=np.int32)
-    w_arr = np.asarray(edge_w, dtype=np.float32)
+    df = pd.read_parquet(ppi_file, columns=["regulator", "target", "weight"])
+    df["regulator"] = df["regulator"].astype(str).str.upper()
+    df["target"] = df["target"].astype(str).str.upper()
+    perturb_symbols = {g for g in perturb_genes if g in id_to_idx}
+    df = df[df["regulator"].isin(perturb_symbols) & df["target"].isin(perturb_symbols)]
+    if df.empty:
+        src_arr = np.zeros((0,), dtype=np.int32)
+        tgt_arr = np.zeros((0,), dtype=np.int32)
+        w_arr = np.zeros((0,), dtype=np.float32)
+    else:
+        src_arr = df["regulator"].map(id_to_idx).to_numpy(dtype=np.int32)
+        tgt_arr = df["target"].map(id_to_idx).to_numpy(dtype=np.int32)
+        w_arr = df["weight"].astype(np.float32).to_numpy()
     if src_arr.size:
         deg = np.zeros((max_seq_len,), dtype=np.float32)
         np.add.at(deg, tgt_arr, w_arr)
         w_arr = w_arr / (deg[tgt_arr] + 1e-8)
     np.savez_compressed(cache_file, edge_src=src_arr, edge_tgt=tgt_arr, edge_w=w_arr)
+    with open(cache_file.with_suffix(".json"), "w", encoding="utf-8") as f:
+        json.dump(
+            {
+                "gene_ids_file": str(gene_ids_file),
+                "ppi_file": str(ppi_file),
+                "max_seq_len": int(max_seq_len),
+                "edge_count": int(src_arr.size),
+                "perturbation_genes_requested": int(len(perturb_genes)),
+                "perturbation_genes_in_combined_table": int(len(perturb_indices)),
+                "gene_ids_sha1": ids_digest,
+                "perturbation_genes_sha1": perturb_digest,
+            },
+            f,
+            indent=2,
+            sort_keys=True,
+        )
     print(f"Wrote PPI edge cache: {cache_file} ({src_arr.size} edges, {len(perturb_indices)} perturbation genes)")
     return cache_file
 
@@ -549,8 +610,6 @@ def set_global_seed(seed: int) -> None:
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
-    if torch.cuda.is_available():
-        torch.cuda.manual_seed_all(seed)
 
 
 def dense_X(adata: ad.AnnData) -> np.ndarray:
@@ -712,13 +771,18 @@ def parse_args():
         help="Energy-distance component in the optional combined terminal distribution loss.",
     )
     p.add_argument("--condition-combined-epsilon", type=float, default=1e-2)
-    p.add_argument("--endpoint-mse-weight", type=float, default=0.0)
-    p.add_argument("--cosine-loss-weight", type=float, default=0.0, help="Weight for cosine similarity loss on delta (directional accuracy).")
+    p.add_argument("--endpoint-mse-weight", type=float, default=0.1)
+    p.add_argument("--condition-mean-delta-weight", type=float, default=0.0, help="Weight for condition-level mean delta supervision.")
+    p.add_argument("--high-delta-endpoint-weight", type=float, default=0.0, help="Extra endpoint/mean-loss weight on genes with large true condition delta.")
+    p.add_argument("--high-delta-max-weight", type=float, default=4.0, help="Maximum per-gene multiplier used by high-delta endpoint/mean losses.")
+    p.add_argument("--terminal-loss-time-power", type=float, default=2.0, help="Power for terminal-loss time gate t^p; larger values focus endpoint-style losses closer to t=1.")
+    p.add_argument("--cosine-loss-weight", type=float, default=0.1, help="Weight for cosine similarity loss on delta (directional accuracy).")
     p.add_argument("--hidden-dims", type=int, nargs="+", default=[512, 512, 512])
     p.add_argument("--decoder-dims", type=int, nargs="+", default=[1024, 1024, 1024])
     p.add_argument("--time-encoder-dims", type=int, nargs="+", default=[512, 512, 512])
+    p.add_argument("--condition-embedding-dim", type=int, default=512, help="Dimension of condition embedding (default: 512, was 256).")
     p.add_argument("--cond-output-dropout", type=float, default=0.1)
-    p.add_argument("--gradient-accumulation-steps", type=int, default=5)
+    p.add_argument("--gradient-accumulation-steps", type=int, default=20)
     p.add_argument("--gradient-clip-norm", type=float, default=1.0, help="Max gradient norm for clipping.")
     p.add_argument("--learning-rate", type=float, default=5e-5, help="Learning rate for Adam optimizer.")
     p.add_argument(
@@ -777,15 +841,9 @@ def parse_args():
         help="Symbol-keyed gene2vec dictionary used for perturbation and GO-response gene embeddings.",
     )
     p.add_argument(
-        "--gene2go-all",
-        default=str(ROOT / "data_gab" / "gene2go_all.pkl"),
-        help="GEARS symbol-keyed gene-to-GO-term dictionary used to build the MyFlow GO response graph.",
-    )
-    p.add_argument(
-        "--go-jaccard-threshold",
-        type=float,
-        default=0.1,
-        help="Minimum GO-term Jaccard similarity used when building the symbol GO graph.",
+        "--go-graph-file",
+        default=str(ROOT / "comparison_methods" / "TxPert-main" / "data" / "graphs" / "go" / "go_top_50.csv"),
+        help="TxPert GO graph CSV with source,target,importance columns.",
     )
     # p.add_argument("--preset", choices=["jurkat"], default=None, help="Optional preset for known datasets (loads embeddings automatically)")
     return p.parse_args()
@@ -815,7 +873,7 @@ def main():
 
     print("Loading merged dataset:", adata_path)
     adata = ad.read_h5ad(str(adata_path))
-    # Keep perturbation identifiers in gene-symbol space for GEARS-compatible splits.
+    # Keep perturbation identifiers in gene-symbol space.
     if 'gene' in adata.obs:
         adata.obs['target_gene'] = adata.obs['gene'].astype(str)
     elif 'gene_id' in adata.obs:
@@ -836,7 +894,7 @@ def main():
         print("Warning: highly_variable column not found in dataset!")
     
     gene2vec_dict_file = _resolve_existing_path([Path(args.gene2vec_dict)], "symbol gene2vec dict")
-    gene2go_all_file = _resolve_existing_path([Path(args.gene2go_all)], "symbol gene2go_all.pkl")
+    go_graph_source_file = _resolve_existing_path([Path(args.go_graph_file)], "TxPert GO graph CSV")
     emb = load_gene2vec_dict(gene2vec_dict_file)
     gene2vec_keys_upper = {gene.upper() for gene in emb}
     
@@ -896,13 +954,12 @@ def main():
         s: _combined_sym_to_idx[s] for s in _perturb_id_list if s in _combined_sym_to_idx
     }
 
-    gene2go_graph_file = build_symbol_go_graph_from_gene2go(
-        gene2go_all_file=gene2go_all_file,
+    gene2go_graph_file = build_symbol_go_graph_from_edge_file(
+        source_graph_file=go_graph_source_file,
         genes=combined_genes,
         save_dir=out_dir,
         cache_dir=cache_dir,
-        cache_prefix="replogle_symbol_combined",
-        threshold=args.go_jaccard_threshold,
+        cache_prefix="replogle_symbol_txpert_combined",
     )
     # Build edge cache: unified (GO+PPI merged) or separate GO + optional PPI
     ppi_edge_cache_file = None
@@ -930,11 +987,15 @@ def main():
         go_edge_cache_file = build_go_edge_cache(
             gene_ids_file=combined_ids_file,
             gene2go_graph_file=gene2go_graph_file,
-            max_seq_len=int(adata.n_vars),
+            # The GO prior uses a combined table: output HVGs first, then
+            # perturbation genes that may be absent from HVGs.  Build edges
+            # over the full table so non-HVG perturbation genes get graph
+            # context instead of falling back to raw gene2vec only.
+            max_seq_len=_combined_gene_count,
             top_k=args.go_response_top_k,
             weight_power=args.go_response_weight_power,
             cache_dir=cache_dir,
-            cache_prefix="replogle_symbol",
+            cache_prefix="replogle_symbol_txpert",
         )
     print(f"Symbol genes: {adata.n_vars}")
     print(f"Perturbation prior genes: {len(perturb_genes_for_prior)}")
@@ -950,7 +1011,7 @@ def main():
             gene_ids_file=combined_ids_file,
             ppi_file=ppi_file,
             perturb_genes=set(perturb_genes_for_prior),
-            max_seq_len=999999,  # Don't truncate - use full combined gene list
+            max_seq_len=_combined_gene_count,
             cache_dir=cache_dir,
             cache_prefix="replogle_symbol",
         )
@@ -1152,7 +1213,7 @@ def main():
             "static_cache": {
                 "cache_dir": str(cache_dir),
                 "gene2vec_dict_file": str(gene2vec_dict_file),
-                "gene2go_all_file": str(gene2go_all_file),
+                "go_graph_source_file": str(go_graph_source_file),
                 "matched_gene_ids_file": str(matched_ids_file),
                 "matched_gene2vec_file": str(matched_gene2vec_file),
                 "go_graph_file": str(gene2go_graph_file),
@@ -1205,6 +1266,7 @@ def main():
             layers_before_pool["cell_type"] = []
     cf.prepare_model(
         seed=args.seed,
+        condition_embedding_dim=args.condition_embedding_dim,
         hidden_dims=args.hidden_dims,
         decoder_dims=args.decoder_dims,
         time_encoder_dims=args.time_encoder_dims,
@@ -1248,6 +1310,10 @@ def main():
             "condition_combined_energy_weight": args.condition_combined_energy_weight,
             "condition_combined_epsilon": args.condition_combined_epsilon,
             "endpoint_mse_weight": args.endpoint_mse_weight,
+            "condition_mean_delta_weight": args.condition_mean_delta_weight,
+            "high_delta_endpoint_weight": args.high_delta_endpoint_weight,
+            "high_delta_max_weight": args.high_delta_max_weight,
+            "terminal_loss_time_power": args.terminal_loss_time_power,
             "cosine_loss_weight": args.cosine_loss_weight,
             "match_every_n": args.match_every_n,
         },
@@ -1386,10 +1452,12 @@ def main():
         ours_mean = np.array(adata_pred.X.mean(axis=0)).flatten()
 
         mse, mae, l2 = cal_metric(ours_mean, real_mean)
-        pearson_del, pearson_del_top20, ds = cal_delta_metric(ctrl_mean, real_mean, ours_mean)
-        
+        pearson_del, pearson_del_top20, _ = cal_delta_metric(ctrl_mean, real_mean, ours_mean, top_k=20)
+        _, pearson_del_top50, _ = cal_delta_metric(ctrl_mean, real_mean, ours_mean, top_k=50)
+        _, pearson_del_top1000, _ = cal_delta_metric(ctrl_mean, real_mean, ours_mean, top_k=1000)
+
         print(f"Basic => MSE: {mse:.6f}, MAE: {mae:.6f}, L2: {l2:.4f}")
-        print(f"Delta => Pearson Δ: {pearson_del:.4f}, Pearson Δ20: {pearson_del_top20:.4f}, DS: {ds:.4f}")
+        print(f"Delta => Pearson Δ: {pearson_del:.4f}, Δ20: {pearson_del_top20:.4f}, Δ50: {pearson_del_top50:.4f}, Δ1000: {pearson_del_top1000:.4f}")
         metrics_summary.update(
             {
                 "success": True,
@@ -1398,7 +1466,8 @@ def main():
                 "l2": float(l2),
                 "pearson_delta": float(pearson_del),
                 "pearson_delta_top20": float(pearson_del_top20),
-                "direction_sign_score": float(ds),
+                "pearson_delta_top50": float(pearson_del_top50),
+                "pearson_delta_top1000": float(pearson_del_top1000),
             }
         )
         
@@ -1416,14 +1485,29 @@ def main():
             avg_ndegs = float(deg_df["n_degs"].mean())
             spearman_valid = deg_df["de_spearman"].dropna()
             avg_de_spearman = float(spearman_valid.mean()) if len(spearman_valid) > 0 else float("nan")
-            print(f"Per-condition DEG avg => R²: {avg_r2:.4f}, EV: {avg_ev:.4f}, PCC: {avg_pcc:.4f}, DE-Spearman: {avg_de_spearman:.4f}, avg #DEGs: {avg_ndegs:.0f}")
+            avg_precision = float(deg_df["deg_precision"].mean())
+            avg_recall = float(deg_df["deg_recall"].mean())
+            avg_f1 = float(deg_df["deg_f1"].mean())
+            avg_jaccard = float(deg_df["deg_jaccard"].mean())
+            avg_n_pred_degs = float(deg_df["n_pred_degs"].mean())
+            avg_n_overlap = float(deg_df["n_overlap_degs"].mean())
+            avg_condition_ds = float(deg_df["condition_ds"].mean())
+            print(f"Per-condition DEG avg => R²: {avg_r2:.4f}, EV: {avg_ev:.4f}, PCC: {avg_pcc:.4f}, condition_DS: {avg_condition_ds:.4f}, DE-Spearman: {avg_de_spearman:.4f}, avg #DEGs: {avg_ndegs:.0f}")
+            print(f"DEG Overlap => Precision: {avg_precision:.4f}, Recall: {avg_recall:.4f}, F1: {avg_f1:.4f}, Jaccard: {avg_jaccard:.4f}, avg #pred-DEGs: {avg_n_pred_degs:.0f}, avg #overlap: {avg_n_overlap:.0f}")
             metrics_summary.update(
                 {
                     "r2_deg": avg_r2,
                     "ev_deg": avg_ev,
                     "pcc_deg": avg_pcc,
                     "de_spearman": avg_de_spearman,
+                    "deg_precision": avg_precision,
+                    "deg_recall": avg_recall,
+                    "deg_f1": avg_f1,
+                    "deg_jaccard": avg_jaccard,
                     "avg_n_degs": avg_ndegs,
+                    "avg_n_pred_degs": avg_n_pred_degs,
+                    "avg_n_overlap_degs": avg_n_overlap,
+                    "condition_ds": avg_condition_ds,
                     "deg_conditions_count": len(deg_details),
                 }
             )

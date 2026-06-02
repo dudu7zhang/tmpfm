@@ -50,7 +50,7 @@ def cal_metric(pred_mean, real_mean):
     return mse, mae, l2
 
 
-def cal_delta_metric(ctrl_mean, real_mean, pred_mean, top_k=20):
+def cal_delta_metric(ctrl_mean, real_mean, pred_mean, top_k=20, ds_top_k=None, sign_eps=1e-8):
     delta_real = real_mean - ctrl_mean
     delta_pred = pred_mean - ctrl_mean
     pearson_delta, _ = scipy.stats.pearsonr(delta_real, delta_pred)
@@ -63,8 +63,14 @@ def cal_delta_metric(ctrl_mean, real_mean, pred_mean, top_k=20):
     else:
         pearson_delta_top_k = 0.0
 
-    sign_real = np.sign(delta_real[top_n_idx])
-    sign_pred = np.sign(delta_pred[top_n_idx])
+    # DS is all-gene sign agreement by default.  A positive ds_top_k is kept
+    # only for backward-compatible ad-hoc analyses.
+    if ds_top_k is None or ds_top_k <= 0:
+        ds_idx = np.arange(delta_real.shape[0])
+    else:
+        ds_idx = np.argsort(np.abs(delta_real))[-ds_top_k:]
+    sign_real = np.where(np.abs(delta_real[ds_idx]) > sign_eps, np.sign(delta_real[ds_idx]), 0)
+    sign_pred = np.where(np.abs(delta_pred[ds_idx]) > sign_eps, np.sign(delta_pred[ds_idx]), 0)
     ds_score = np.mean([1 if r == p else 0 for r, p in zip(sign_real, sign_pred)])
     return pearson_delta, pearson_delta_top_k, ds_score
 
@@ -182,7 +188,7 @@ def compute_des_per_condition(ctrl_adata, real_adata, pred_adata,
             ctrl_mean = np.array(ctrl_aligned.X.mean(axis=0)).flatten()
             real_mean = np.array(real_aligned.X.mean(axis=0)).flatten()
             pred_mean = np.array(pred_aligned.X.mean(axis=0)).flatten()
-            c_pearson, c_pearson_top20, c_ds = cal_delta_metric(ctrl_mean, real_mean, pred_mean)
+            c_pearson, c_pearson_top20, c_ds = cal_delta_metric(ctrl_mean, real_mean, pred_mean, top_k=20)
             c_l2 = np.linalg.norm(real_mean - pred_mean)
             des_results.append({
                 "condition": str(cond),
@@ -216,6 +222,44 @@ def compute_des_per_condition(ctrl_adata, real_adata, pred_adata,
     return recall_avg, acc_avg, spearman_avg, des_results
 
 
+def cal_deg_overlap_metrics(ctrl_mean, real_mean, pred_mean, threshold=2.0):
+    """Compute DEG overlap (precision/recall/F1/Jaccard) between pred-DEGs and real-DEGs."""
+    delta_real = real_mean - ctrl_mean
+    delta_pred = pred_mean - ctrl_mean
+
+    def _identify(delta):
+        median_d = np.median(delta)
+        mad = np.median(np.abs(delta - median_d)) * 1.4826
+        if mad < 1e-10:
+            mad = np.std(delta)
+        if mad < 1e-10:
+            return set()
+        z = np.abs(delta - median_d) / (mad + 1e-10)
+        return set(np.where(z > threshold)[0])
+
+    real_de = _identify(delta_real)
+    pred_de = _identify(delta_pred)
+    overlap = len(real_de & pred_de)
+    n_real = len(real_de)
+    n_pred = len(pred_de)
+    union = len(real_de | pred_de)
+
+    precision = overlap / n_pred if n_pred > 0 else 0.0
+    recall = overlap / n_real if n_real > 0 else 0.0
+    f1 = 2 * precision * recall / (precision + recall) if (precision + recall) > 0 else 0.0
+    jaccard = overlap / union if union > 0 else 0.0
+
+    return {
+        "deg_precision": float(precision),
+        "deg_recall": float(recall),
+        "deg_f1": float(f1),
+        "deg_jaccard": float(jaccard),
+        "n_real_degs": int(n_real),
+        "n_pred_degs": int(n_pred),
+        "n_overlap_degs": int(overlap),
+    }
+
+
 def compute_deg_metrics_per_condition(ctrl_adata, real_adata, pred_adata,
                                       real_condition_key="condition",
                                       pred_condition_key="perturbation"):
@@ -238,6 +282,8 @@ def compute_deg_metrics_per_condition(ctrl_adata, real_adata, pred_adata,
             pred_mean = np.array(pred_aligned.X.mean(axis=0)).flatten()
             deg_idx = identify_degs(ctrl_mean, real_mean)
             deg_metrics = cal_deg_metrics(ctrl_mean, real_mean, pred_mean, deg_idx)
+            deg_overlap = cal_deg_overlap_metrics(ctrl_mean, real_mean, pred_mean)
+            _, _, cond_ds = cal_delta_metric(ctrl_mean, real_mean, pred_mean, top_k=20)
             n_degs = len(deg_idx)
 
             # DE Spearman: rank correlation of logFC on real DE genes
@@ -255,15 +301,13 @@ def compute_deg_metrics_per_condition(ctrl_adata, real_adata, pred_adata,
                 real_sig_genes = set(real_de_genes[sig_mask])
 
                 if len(real_sig_genes) > 1:
-                    combined_pred = ctrl_aligned.concatenate(
-                        pred_aligned, batch_key="condition", batch_categories=["ctrl", "target"]
-                    )
-                    sc.tl.rank_genes_groups(
-                        combined_pred, groupby="condition", reference="ctrl", method="t-test"
-                    )
-                    all_pred_genes = np.array(combined_pred.uns["rank_genes_groups"]["names"]["target"])
-                    all_pred_logfc = np.array(combined_pred.uns["rank_genes_groups"]["logfoldchanges"]["target"])
-                    pred_logfc_map = dict(zip(all_pred_genes, all_pred_logfc))
+                    # Manual pred logFC: mean(pred) - mean(ctrl).
+                    # scanpy's rank_genes_groups gives wrong logFC for predicted data
+                    # because near-zero variance in predictions inflates the t-test.
+                    pred_logfc_arr = pred_mean - ctrl_mean
+                    pred_logfc_map = dict(zip(
+                        [str(v) for v in pred_aligned.var_names], pred_logfc_arr
+                    ))
 
                     real_logfc_map = dict(zip(
                         real_de_genes,
@@ -285,7 +329,14 @@ def compute_deg_metrics_per_condition(ctrl_adata, real_adata, pred_adata,
                 "condition": str(cond),
                 "n_degs": int(n_degs),
                 **deg_metrics,
+                "deg_precision": deg_overlap["deg_precision"],
+                "deg_recall": deg_overlap["deg_recall"],
+                "deg_f1": deg_overlap["deg_f1"],
+                "deg_jaccard": deg_overlap["deg_jaccard"],
+                "n_pred_degs": deg_overlap["n_pred_degs"],
+                "n_overlap_degs": deg_overlap["n_overlap_degs"],
                 "de_spearman": de_spearman,
+                "condition_ds": float(cond_ds),
             })
         except Exception:
             continue
@@ -308,12 +359,18 @@ def evaluate_predictions(ctrl_adata, real_adata, pred_adata, output_prefix="",
         pred_mean = np.array(pred_adata.X.mean(axis=0)).flatten()
 
         mse, mae, l2 = cal_metric(pred_mean, real_mean)
-        pearson_del, pearson_del_top20, ds = cal_delta_metric(
-            ctrl_mean, real_mean, pred_mean
+        pearson_del, pearson_del_top20, _ = cal_delta_metric(
+            ctrl_mean, real_mean, pred_mean, top_k=20
+        )
+        _, pearson_del_top50, _ = cal_delta_metric(
+            ctrl_mean, real_mean, pred_mean, top_k=50
+        )
+        _, pearson_del_top1000, _ = cal_delta_metric(
+            ctrl_mean, real_mean, pred_mean, top_k=1000
         )
         print(f"Basic => MSE: {mse:.6f}, MAE: {mae:.6f}, L2: {l2:.4f}")
         print(
-            f"Delta => Pearson D: {pearson_del:.4f}, Pearson D20: {pearson_del_top20:.4f}, DS: {ds:.4f}"
+            f"Delta => Pearson Δ: {pearson_del:.4f}, Δ20: {pearson_del_top20:.4f}, Δ50: {pearson_del_top50:.4f}, Δ1000: {pearson_del_top1000:.4f}"
         )
         metrics.update(
             {
@@ -322,7 +379,8 @@ def evaluate_predictions(ctrl_adata, real_adata, pred_adata, output_prefix="",
                 "l2": float(l2),
                 "pearson_delta": float(pearson_del),
                 "pearson_delta_top20": float(pearson_del_top20),
-                "direction_sign_score": float(ds),
+                "pearson_delta_top50": float(pearson_del_top50),
+                "pearson_delta_top1000": float(pearson_del_top1000),
             }
         )
 
@@ -342,9 +400,11 @@ def evaluate_predictions(ctrl_adata, real_adata, pred_adata, output_prefix="",
             avg_ndegs = float(deg_df["n_degs"].mean())
             spearman_valid = deg_df["de_spearman"].dropna()
             avg_de_spearman = float(spearman_valid.mean()) if len(spearman_valid) > 0 else float("nan")
+            avg_condition_ds = float(deg_df["condition_ds"].mean())
             print(
                 f"Per-condition DEG avg => R²: {avg_r2:.4f}, EV: {avg_ev:.4f}, "
-                f"PCC: {avg_pcc:.4f}, DE-Spearman: {avg_de_spearman:.4f}, avg #DEGs: {avg_ndegs:.0f}"
+                f"PCC: {avg_pcc:.4f}, condition_DS: {avg_condition_ds:.4f}, "
+                f"DE-Spearman: {avg_de_spearman:.4f}, avg #DEGs: {avg_ndegs:.0f}"
             )
             metrics.update(
                 {
@@ -353,9 +413,31 @@ def evaluate_predictions(ctrl_adata, real_adata, pred_adata, output_prefix="",
                     "pcc_deg": avg_pcc,
                     "de_spearman": avg_de_spearman,
                     "avg_n_degs": avg_ndegs,
+                    "condition_ds": avg_condition_ds,
                     "deg_conditions_count": len(deg_details),
                 }
             )
+
+            # DEG overlap averaged from per-condition results
+            avg_prec = float(deg_df["deg_precision"].mean())
+            avg_rec = float(deg_df["deg_recall"].mean())
+            avg_f1 = float(deg_df["deg_f1"].mean())
+            avg_jac = float(deg_df["deg_jaccard"].mean())
+            avg_pred_degs = float(deg_df["n_pred_degs"].mean())
+            avg_overlap = float(deg_df["n_overlap_degs"].mean())
+            print(
+                f"DEG Overlap => Precision: {avg_prec:.4f}, Recall: {avg_rec:.4f}, "
+                f"F1: {avg_f1:.4f}, Jaccard: {avg_jac:.4f}, "
+                f"avg #pred-DEGs: {avg_pred_degs:.0f}, avg #overlap: {avg_overlap:.0f}"
+            )
+            metrics.update({
+                "deg_precision": avg_prec,
+                "deg_recall": avg_rec,
+                "deg_f1": avg_f1,
+                "deg_jaccard": avg_jac,
+                "avg_n_pred_degs": avg_pred_degs,
+                "avg_n_overlap_degs": avg_overlap,
+            })
 
         # Save per-condition details
         if output_prefix and deg_details:

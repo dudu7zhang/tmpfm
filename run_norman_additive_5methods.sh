@@ -18,10 +18,10 @@ FLOW_PY="${FLOW_PY:-$HOME/miniconda3/envs/flow/bin/python}"
 CMP_PY="${CMP_PY:-$HOME/miniconda3/envs/cmp_methods/bin/python}"
 
 GPU_MYFLOW=${GPU_MYFLOW:-0}
-GPU_GEARS=${GPU_GEARS:-1}
-GPU_CELLFLOW=${GPU_CELLFLOW:-2}
-GPU_SCDFM=${GPU_SCDFM:-3}
-GPU_TXPERT=${GPU_TXPERT:-1}
+GPU_GEARS=${GPU_GEARS:-0}
+GPU_CELLFLOW=${GPU_CELLFLOW:-1}
+GPU_SCDFM=${GPU_SCDFM:-2}
+GPU_TXPERT=${GPU_TXPERT:-3}
 
 echo "=========================================="
 echo "Starting Norman Additive runs"
@@ -60,9 +60,9 @@ echo "MyFlow PID: $!"
 #     > "$LOG_DIR/scdfm_norman_additive.log" 2>&1 &
 # echo "scDFM PID: $!"
 
-CUDA_VISIBLE_DEVICES=$GPU_TXPERT nohup "$CMP_PY" "$COMPARISON_SCRIPTS_DIR/txpert_norman_additive.py" \
-    > "$LOG_DIR/txpert_norman_additive.log" 2>&1 &
-echo "TxPert PID: $!"
+# CUDA_VISIBLE_DEVICES=$GPU_TXPERT nohup "$CMP_PY" "$COMPARISON_SCRIPTS_DIR/txpert_norman_additive.py" \
+#     > "$LOG_DIR/txpert_norman_additive.log" 2>&1 &
+# echo "TxPert PID: $!"
 
 echo "=========================================="
 echo "Launched all five runs."

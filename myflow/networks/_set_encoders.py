@@ -201,16 +201,18 @@ class GOResponsePriorEncoder(nn.Module):
         # Output gene indices: first max_seq_len entries in the combined table
         self.output_indices = jnp.arange(min(self.max_seq_len, num_all_genes), dtype=jnp.int32)
         # Perturbation gene indices: provided by the training script
-        self.perturb_indices = jnp.array(
-            [i for i in self.perturb_indices_in_combined if 0 <= i < num_all_genes],
-            dtype=jnp.int32,
-        )
+        perturb_indices = [int(i) for i in self.perturb_indices_in_combined if 0 <= int(i) < num_all_genes]
+        self.perturb_indices = jnp.array(perturb_indices, dtype=jnp.int32)
 
         # Pair-processing Dense layers
         self.rho_in = nn.Dense(self.rho_dim, name="rho_in")
         self.rho_out = nn.Dense(self.rho_dim, name="rho_out")
         self.synergy_in = nn.Dense(self.rho_dim, name="synergy_in")
         self.synergy_out = nn.Dense(self.rho_dim, name="synergy_out")
+
+        # Graph attention projections (GAT-style, shared across layers)
+        self.attn_q = nn.Dense(self.dim, use_bias=False, name="go_attn_q")
+        self.attn_k = nn.Dense(self.dim, use_bias=False, name="go_attn_k")
 
         # Graph message passing layers
         self.graph_norms = [nn.LayerNorm(name=f"go_prior_norm_{i}") for i in range(max(int(self.num_layers), 1))]
@@ -291,7 +293,14 @@ class GOResponsePriorEncoder(nn.Module):
         graph_nodes = self.gene2vec_weight
         if self.has_edges:
             for layer_idx in range(max(int(self.num_layers), 1)):
-                msg = graph_nodes[self.edge_src] * self.edge_w[:, None]
+                # GAT-style attention aggregation (replaces fixed edge_w weighting)
+                q = self.attn_q(graph_nodes)  # (N, dim)
+                k = self.attn_k(graph_nodes)  # (N, dim)
+                attn_logits = jnp.sum(q[self.edge_tgt] * k[self.edge_src], axis=-1) / jnp.sqrt(self.dim)
+                attn_exp = jnp.exp(attn_logits - jnp.max(attn_logits))
+                sum_exp = jnp.zeros((graph_nodes.shape[0],)).at[self.edge_tgt].add(attn_exp)
+                attn = attn_exp / (sum_exp[self.edge_tgt] + 1e-10)
+                msg = graph_nodes[self.edge_src] * attn[:, None]
                 agg = jnp.zeros_like(graph_nodes).at[self.edge_tgt].add(msg)
                 graph_nodes = self.graph_norms[layer_idx](graph_nodes + agg)
                 if layer_idx < self.num_layers - 1:
@@ -300,15 +309,24 @@ class GOResponsePriorEncoder(nn.Module):
         # --- Split into output genes (z_i) and perturbation genes (z_p) ---
         z_i_nodes = graph_nodes[self.output_indices]  # (num_output_genes, dim)
 
-        # Select per-cell perturbation gene from graph-encoded table
+        # Select per-cell perturbation genes from graph-encoded table.
+        # Padding / non-targeting entries are encoded as -1 by the DataManager
+        # and must not be clipped to a real gene.
         if perturb_indices is not None:
-            # perturb_indices: (B,) — index into combined table for each cell's perturbation
-            idx = jnp.clip(perturb_indices.ravel(), 0, graph_nodes.shape[0] - 1)
-            z_p = graph_nodes[idx]  # (B, dim) — one perturbation gene per cell
+            idx_raw = perturb_indices.astype(jnp.int32)
+            if idx_raw.ndim == 1:
+                idx_raw = idx_raw[:, None]
+            valid = (idx_raw >= 0) & (idx_raw < graph_nodes.shape[0])
+            idx = jnp.clip(idx_raw, 0, graph_nodes.shape[0] - 1)
+            gathered = graph_nodes[idx] * valid[..., None]
+            denom = jnp.maximum(jnp.sum(valid, axis=1, keepdims=True), 1)
+            z_p = jnp.sum(gathered, axis=1) / denom
+            has_valid = (jnp.sum(valid, axis=1) > 0).astype(graph_nodes.dtype)
         else:
             # Fallback during init: use first perturbation gene for all cells
             z_p = graph_nodes[self.perturb_indices[0:1]]  # (1, dim)
             z_p = jnp.broadcast_to(z_p, (perturb_tokens.shape[0], z_p.shape[-1]))
+            has_valid = jnp.ones((perturb_tokens.shape[0],), dtype=graph_nodes.dtype)
 
         # Pair features: z_i (O, dim) × z_p (B, dim) → (B, O, 4*dim)
         z_i_exp = jnp.broadcast_to(z_i_nodes[None, :, :], (z_p.shape[0], z_i_nodes.shape[0], z_i_nodes.shape[1]))
@@ -319,6 +337,7 @@ class GOResponsePriorEncoder(nn.Module):
         rho = self.rho_in(pair)
         rho = nn.silu(rho)
         rho = self.rho_out(rho)  # (B, O, rho_dim)
+        rho = rho * has_valid[:, None, None]
 
         return rho
 
@@ -359,10 +378,8 @@ class PerturbationGraphPriorEncoder(nn.Module):
         self.gene2vec_weight = jnp.array(gene2vec_weight[:num_all_genes], dtype=jnp.float32)
 
         self.output_indices = jnp.arange(min(self.max_seq_len, num_all_genes), dtype=jnp.int32)
-        self.perturb_indices = jnp.array(
-            [i for i in self.perturb_indices_in_combined if 0 <= i < num_all_genes],
-            dtype=jnp.int32,
-        )
+        perturb_indices = [int(i) for i in self.perturb_indices_in_combined if 0 <= int(i) < num_all_genes]
+        self.perturb_indices = jnp.array(perturb_indices, dtype=jnp.int32)
 
         # Pair-processing Dense layers
         self.rho_in = nn.Dense(self.rho_dim, name="pert_rho_in")
@@ -388,7 +405,7 @@ class PerturbationGraphPriorEncoder(nn.Module):
             return
 
         # Build perturbation-only subgraph from PPI file
-        perturb_set = set(int(i) for i in self.perturb_indices.tolist())
+        perturb_set = set(perturb_indices)
         edge_src: list[int] = []
         edge_tgt: list[int] = []
         edge_w: list[float] = []
@@ -468,11 +485,19 @@ class PerturbationGraphPriorEncoder(nn.Module):
         z_i_nodes = graph_nodes[self.output_indices]
 
         if perturb_indices is not None:
-            idx = jnp.clip(perturb_indices.ravel(), 0, graph_nodes.shape[0] - 1)
-            z_p = graph_nodes[idx]
+            idx_raw = perturb_indices.astype(jnp.int32)
+            if idx_raw.ndim == 1:
+                idx_raw = idx_raw[:, None]
+            valid = (idx_raw >= 0) & (idx_raw < graph_nodes.shape[0])
+            idx = jnp.clip(idx_raw, 0, graph_nodes.shape[0] - 1)
+            gathered = graph_nodes[idx] * valid[..., None]
+            denom = jnp.maximum(jnp.sum(valid, axis=1, keepdims=True), 1)
+            z_p = jnp.sum(gathered, axis=1) / denom
+            has_valid = (jnp.sum(valid, axis=1) > 0).astype(graph_nodes.dtype)
         else:
             z_p = graph_nodes[self.perturb_indices[0:1]]
             z_p = jnp.broadcast_to(z_p, (perturb_tokens.shape[0], z_p.shape[-1]))
+            has_valid = jnp.ones((perturb_tokens.shape[0],), dtype=graph_nodes.dtype)
 
         # Pair features: z_i (O, dim) x z_p (B, dim) -> (B, O, 4*dim)
         z_i_exp = jnp.broadcast_to(z_i_nodes[None, :, :], (z_p.shape[0], z_i_nodes.shape[0], z_i_nodes.shape[1]))
@@ -483,6 +508,7 @@ class PerturbationGraphPriorEncoder(nn.Module):
         rho = self.rho_in(pair)
         rho = nn.silu(rho)
         rho = self.rho_out(rho)
+        rho = rho * has_valid[:, None, None]
 
         return rho
 

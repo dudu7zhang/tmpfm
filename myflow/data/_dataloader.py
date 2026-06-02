@@ -82,15 +82,21 @@ class TrainSampler:
         target_cells_mask = self._data.perturbation_covariates_mask == target_dist_idx
         target_batch_idcs = self._sample_from_mask(rng, target_cells_mask)
         target_batch = self._data.cell_data[target_batch_idcs]
+        condition_idx = np.full((self.batch_size,), target_dist_idx, dtype=np.int32)
 
         if not self._has_condition_data:
-            return {"src_cell_data": source_batch, "tgt_cell_data": target_batch}
+            return {
+                "src_cell_data": source_batch,
+                "tgt_cell_data": target_batch,
+                "condition_idx": condition_idx,
+            }
         else:
             condition_batch = self._get_embeddings(target_dist_idx, self._data.condition_data)
             return {
                 "src_cell_data": source_batch,
                 "tgt_cell_data": target_batch,
                 "condition": condition_batch,
+                "condition_idx": condition_idx,
             }
 
     @property

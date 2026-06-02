@@ -113,6 +113,11 @@ class OTFlowMatching:
         self.condition_influence_weight = float(kwargs.pop("condition_influence_weight", 0.1))
         self.endpoint_mse_weight = float(kwargs.pop("endpoint_mse_weight", 0.0))
         self.cosine_loss_weight = float(kwargs.pop("cosine_loss_weight", 0.0))
+        self.condition_mean_delta_weight = float(kwargs.pop("condition_mean_delta_weight", 0.0))
+        self.high_delta_endpoint_weight = float(kwargs.pop("high_delta_endpoint_weight", 0.0))
+        self.high_delta_max_weight = float(kwargs.pop("high_delta_max_weight", 4.0))
+        self.terminal_loss_time_power = float(kwargs.pop("terminal_loss_time_power", 2.0))
+        self.high_delta_eps = float(kwargs.pop("high_delta_eps", 1e-6))
 
         self.matrix = kwargs.pop("matrix", None)
         
@@ -161,14 +166,30 @@ class OTFlowMatching:
                 base_mean = jnp.mean(sq_err)
                 flow_matching_loss = base_mean
 
+                t_col = jnp.reshape(t, (-1, 1)).astype(v_t.dtype)
+                terminal_gate = jnp.power(t_col, self.terminal_loss_time_power)
+
+                def _condition_mean(values: jnp.ndarray) -> jnp.ndarray:
+                    if condition_idx is None:
+                        return jnp.mean(values, axis=0, keepdims=True)
+                    same_cond = (condition_idx[:, None] == condition_idx[None, :]).astype(values.dtype)
+                    denom = jnp.sum(same_cond, axis=1, keepdims=True) + self.high_delta_eps
+                    return same_cond @ values / denom
+
+                def _high_delta_weights(true_delta_abs: jnp.ndarray) -> jnp.ndarray:
+                    axis = -1 if true_delta_abs.ndim == 2 else 0
+                    keepdims = true_delta_abs.ndim == 2
+                    scale = jnp.mean(true_delta_abs, axis=axis, keepdims=keepdims) + self.high_delta_eps
+                    weights = true_delta_abs / scale
+                    weights = 1.0 + self.high_delta_endpoint_weight * weights
+                    return jnp.minimum(weights, self.high_delta_max_weight)
+
                 # Optional: JAX combined Sinkhorn + Energy regularizer.
                 if self.condition_combined_loss_weight > 0:
-                    t_col = jnp.reshape(t, (-1, 1)).astype(v_t.dtype)
-                    
                     # Stop gradients for t < 0.5 to prevent noisy extrapolations at early stages
                     # from destroying the learned flow matching trajectory.
                     # We scale the gradient smoothly using t^2, so it strongly aligns at t->1
-                    weight_t = jnp.power(t_col, 2)
+                    weight_t = terminal_gate
                     v_t_sinkhorn = jax.lax.stop_gradient(v_t) + (v_t - jax.lax.stop_gradient(v_t)) * weight_t
                     x1_hat = x_t + (1.0 - t_col) * v_t_sinkhorn
                     
@@ -183,15 +204,36 @@ class OTFlowMatching:
 
                 # Direct endpoint MSE supervision (no stop_gradient).
                 if self.endpoint_mse_weight > 0:
-                    t_ep = jnp.reshape(t, (-1, 1)).astype(v_t.dtype)
-                    x1_pred = x_t + (1.0 - t_ep) * v_t
-                    endpoint_loss = jnp.mean((x1_pred - target) ** 2)
+                    x1_pred = x_t + (1.0 - t_col) * v_t
+                    endpoint_sq_err = (x1_pred - target) ** 2
+                    if self.high_delta_endpoint_weight > 0:
+                        true_delta_abs = jnp.abs(_condition_mean(target - source))
+                        gene_weights = _high_delta_weights(true_delta_abs)
+                        endpoint_sq_err = endpoint_sq_err * gene_weights
+                    endpoint_sq_err = endpoint_sq_err * terminal_gate
+                    endpoint_loss = jnp.mean(endpoint_sq_err)
                     flow_matching_loss = flow_matching_loss + self.endpoint_mse_weight * endpoint_loss
+
+                # Condition-level mean supervision in delta space.
+                if self.condition_mean_delta_weight > 0:
+                    x1_pred_cm = x_t + (1.0 - t_col) * v_t
+                    mean_delta_pred = _condition_mean(x1_pred_cm - source)
+                    mean_delta_true = _condition_mean(target - source)
+                    mean_delta_sq_err = (mean_delta_pred - mean_delta_true) ** 2
+                    if self.high_delta_endpoint_weight > 0:
+                        true_delta_abs = jnp.abs(mean_delta_true)
+                        gene_weights = _high_delta_weights(true_delta_abs)
+                        mean_delta_sq_err = mean_delta_sq_err * gene_weights
+                    if mean_delta_sq_err.ndim == 2:
+                        mean_delta_sq_err = mean_delta_sq_err * terminal_gate
+                    else:
+                        mean_delta_sq_err = mean_delta_sq_err * jnp.mean(terminal_gate)
+                    condition_mean_delta_loss = jnp.mean(mean_delta_sq_err)
+                    flow_matching_loss = flow_matching_loss + self.condition_mean_delta_weight * condition_mean_delta_loss
 
                 # Cosine similarity loss on delta (directional accuracy).
                 if self.cosine_loss_weight > 0:
-                    t_cs = jnp.reshape(t, (-1, 1)).astype(v_t.dtype)
-                    x1_pred_cs = x_t + (1.0 - t_cs) * v_t
+                    x1_pred_cs = x_t + (1.0 - t_col) * v_t
                     delta_pred = x1_pred_cs - source
                     delta_true = target - source
                     # Normalize to unit vectors
@@ -200,6 +242,7 @@ class OTFlowMatching:
                     cos_sim = jnp.sum((delta_pred / pred_norm) * (delta_true / true_norm), axis=-1)
                     cosine_loss = jnp.mean(1.0 - cos_sim)
                     flow_matching_loss = flow_matching_loss + self.cosine_loss_weight * cosine_loss
+
 
                 condition_mean_regularization = 0.5 * jnp.mean(mean_cond**2)
                 condition_var_regularization = -0.5 * jnp.mean(1 + logvar_cond - jnp.exp(logvar_cond))
