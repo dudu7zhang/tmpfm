@@ -37,6 +37,7 @@ os.environ["CUDA_VISIBLE_DEVICES"] = _read_early_cli_option("--gpu-id", os.envir
 os.environ.setdefault("XLA_PYTHON_CLIENT_PREALLOCATE", "false")
 
 import anndata as ad
+import jax.numpy as jnp
 import pandas as pd
 import torch
 import numpy as np
@@ -109,98 +110,6 @@ def load_gene2vec_dict(path: Path) -> dict[str, np.ndarray]:
     if len(dims) != 1:
         raise ValueError(f"Inconsistent gene2vec dimensions in {path}: {sorted(dims)[:5]}")
     return out
-
-
-def build_matched_gene2vec_from_dict(
-    gene2vec: dict[str, np.ndarray],
-    ordered_genes: list[str],
-    save_dir: Path,
-    cache_dir: Path | None = None,
-    cache_prefix: str = "norman_symbol",
-    label: str = "expression genes",
-) -> tuple[Path, Path]:
-    ordered = [str(g).strip().upper() for g in ordered_genes]
-    digest = hashlib.sha1("\n".join(ordered).encode("utf-8")).hexdigest()[:16]
-    if cache_dir is not None:
-        cache_dir.mkdir(parents=True, exist_ok=True)
-        cached_ids = cache_dir / f"{cache_prefix}_gene_ids_{digest}.txt"
-        cached_vec = cache_dir / f"{cache_prefix}_gene2vec_{digest}.npy"
-        if cached_ids.exists() and cached_vec.exists():
-            print(f"Using cached matched symbol gene2vec: {cached_vec}")
-            return cached_ids, cached_vec
-
-    dim = next(iter(gene2vec.values())).shape[0]
-    vectors = [gene2vec.get(g, np.zeros(dim, dtype=np.float32)) for g in ordered]
-    matched_vec = np.stack(vectors).astype(np.float32, copy=False)
-
-    gene_ids_out = (
-        cache_dir / f"{cache_prefix}_gene_ids_{digest}.txt"
-        if cache_dir is not None
-        else save_dir / "symbol_gene_ids_matched.txt"
-    )
-    gene2vec_out = (
-        cache_dir / f"{cache_prefix}_gene2vec_{digest}.npy"
-        if cache_dir is not None
-        else save_dir / "symbol_gene2vec_matched.npy"
-    )
-
-    gene_ids_out.parent.mkdir(parents=True, exist_ok=True)
-    with open(gene_ids_out, "w", encoding="utf-8") as f:
-        for g in ordered:
-            f.write(f"{g}\n")
-    np.save(gene2vec_out, matched_vec)
-    missing = sum(1 for gene in ordered if gene not in gene2vec)
-    if missing:
-        print(f"Warning: {missing}/{len(ordered)} {label} missing from symbol gene2vec dict; using zero vectors.")
-
-    return gene_ids_out, gene2vec_out
-
-
-def build_symbol_go_graph_from_edge_file(
-    source_graph_file: Path,
-    genes: list[str],
-    save_dir: Path,
-    cache_dir: Path | None = None,
-    cache_prefix: str = "norman_symbol_txpert",
-) -> Path:
-    ordered = [str(g).strip().upper() for g in genes]
-    gene_set = set(ordered)
-    with open(source_graph_file, "rb") as f:
-        source_digest = hashlib.sha1(f.read()).hexdigest()[:16]
-    digest = hashlib.sha1(
-        ("\n".join(ordered) + f"\n{source_graph_file}\n{source_digest}").encode("utf-8")
-    ).hexdigest()[:16]
-    out_file = (
-        cache_dir / f"{cache_prefix}_go_graph_{digest}.csv"
-        if cache_dir is not None
-        else save_dir / f"{cache_prefix}_go_graph.csv"
-    )
-    if out_file.exists():
-        print(f"Using cached TxPert GO graph: {out_file}")
-        return out_file
-
-    n_edges = 0
-    out_file.parent.mkdir(parents=True, exist_ok=True)
-    with open(source_graph_file, "r", encoding="utf-8") as src_f, open(
-        out_file, "w", encoding="utf-8", newline=""
-    ) as out_f:
-        reader = csv.DictReader(src_f)
-        writer = csv.DictWriter(out_f, fieldnames=["source", "target", "importance"])
-        writer.writeheader()
-        for row in reader:
-            src = str(row.get("source", "")).strip().upper()
-            tgt = str(row.get("target", "")).strip().upper()
-            if src in gene_set and tgt in gene_set:
-                writer.writerow(
-                    {
-                        "source": src,
-                        "target": tgt,
-                        "importance": float(row.get("importance", 1.0)),
-                    }
-                )
-                n_edges += 1
-    print(f"Wrote TxPert GO graph subset: {out_file} ({n_edges} edges, {len(gene_set)} genes)")
-    return out_file
 
 
 def set_global_seed(seed: int) -> None:
@@ -337,7 +246,7 @@ def parse_args():
     p.add_argument("--target-key", default="guide_identity", help="obs column with perturbation target ID")
     p.add_argument("--condition-key", default="guide_merged", help="obs column with perturbation condition name")
     p.add_argument("--control-value", default="ctrl", help="Value in condition-key that marks control cells")
-    p.add_argument("--num-iterations", type=int, default=30000)
+    p.add_argument("--num-iterations", type=int, default=10000)
     p.add_argument("--batch-size", type=int, default=256)
     p.add_argument("--predict-batch-size", type=int, default=256)
     p.add_argument("--skip-prediction", action="store_true")
@@ -345,6 +254,7 @@ def parse_args():
     p.add_argument("--run-name", default="myflow_norman_additive")
     p.add_argument("--gpu-id", default=os.environ.get("CUDA_VISIBLE_DEVICES", "1"))
     p.add_argument("--solver", choices=["otfm", "genot"], default="otfm")
+    p.add_argument("--conditioning", choices=["film", "concatenation"], default="concatenation")
     p.add_argument("--seed", type=int, default=DEFAULT_SEED)
     p.add_argument("--overwrite", action="store_true")
     p.add_argument("--fold", type=int, default=0, help="scDFM-style random re-split fold. Uses split seed 42 + fold.")
@@ -368,29 +278,28 @@ def parse_args():
     p.add_argument("--high-delta-max-weight", type=float, default=4.0, help="Maximum per-gene multiplier used by high-delta endpoint/mean losses.")
     p.add_argument("--terminal-loss-time-power", type=float, default=2.0, help="Power for terminal-loss time gate t^p; larger values focus endpoint-style losses closer to t=1.")
     p.add_argument("--cosine-loss-weight", type=float, default=0.0, help="Weight for cosine similarity loss on delta direction.")
+    #1e-3
     p.add_argument("--learning-rate", type=float, default=5e-4, help="Base learning rate for Adam optimizer.")
     p.add_argument("--hidden-dims", type=int, nargs="+", default=[512, 512, 512])
     p.add_argument("--decoder-dims", type=int, nargs="+", default=[1024, 1024, 1024])
     p.add_argument("--time-encoder-dims", type=int, nargs="+", default=[512, 512, 512])
     p.add_argument("--gradient-accumulation-steps", type=int, default=1)
     p.add_argument("--match-every-n", type=int, default=20, help="Run OT Sinkhorn matching every N steps.")
-    p.add_argument("--go-response-top-k", type=int, default=20, help="Top GO-similar incoming neighbors per gene.")
-    p.add_argument("--go-response-rho-dim", type=int, default=128, help="GO response prior feature dimension.")
-    p.add_argument("--go-response-weight-power", type=float, default=1.5, help="Sharpen GO similarity weights before normalization.")
-    p.add_argument(
-        "--cache-dir",
-        default=str(ROOT / "data_train" / "myflow_cache" / "norman"),
-        help="Directory for reusable symbol gene2vec and GO graph side inputs.",
-    )
     p.add_argument(
         "--gene2vec-dict",
         default=str(ROOT / "data_gab" / "gene2vec_dict.pt"),
-        help="Symbol-keyed gene2vec dictionary.",
+        help="Symbol-keyed gene2vec dictionary for perturbation tokens.",
+    )
+    p.add_argument("--pert-gnn-enabled", action="store_true", help="Enable perturbation-side GNN prior.")
+    p.add_argument("--pert-gnn-hidden-dim", type=int, default=128)
+    p.add_argument("--pert-gnn-num-layers", type=int, default=2)
+    p.add_argument(
+        "--pert-gnn-go-file",
+        default=str(ROOT / "comparison_methods" / "TxPert-main" / "data" / "graphs" / "go" / "go_top_50.csv"),
     )
     p.add_argument(
-        "--go-graph-file",
-        default=str(ROOT / "comparison_methods" / "TxPert-main" / "data" / "graphs" / "go" / "go_top_50.csv"),
-        help="TxPert GO graph CSV with source,target,importance columns.",
+        "--pert-gnn-ppi-file",
+        default=str(ROOT / "comparison_methods" / "TxPert-main" / "data" / "graphs" / "string" / "v11.5.parquet"),
     )
     return p.parse_args()
 
@@ -449,11 +358,8 @@ def main():
     print(f"Current Obs shape: {adata.n_obs}")
     print(f"Current Var shape: {adata.n_vars}")
 
-    # ==================== Build symbol-keyed gene2vec perturbation embeddings ====================
+    # ==================== Perturbation gene token embeddings (gene2vec) ====================
     gene2vec_dict = load_gene2vec_dict(Path(args.gene2vec_dict))
-    go_graph_source_file = Path(args.go_graph_file)
-    if not go_graph_source_file.exists():
-        raise FileNotFoundError(f"TxPert GO graph file not found: {go_graph_source_file}")
     embedding_dim = next(iter(gene2vec_dict.values())).shape[0]
     print(f"Loaded symbol gene2vec: {len(gene2vec_dict)} genes, dim={embedding_dim}")
 
@@ -474,77 +380,132 @@ def main():
 
     rep_key = "gene2vec_pert_gene_tokens"
     adata.uns[rep_key] = pert_emb
-    adata.uns["norman_condition_to_gene_tokens"] = condition_to_tokens
 
-    # Filter to cells whose condition was parsed successfully.
     valid_targets = set(condition_to_tokens.keys())
     valid_mask = adata.obs["condition"].isin(valid_targets)
-    n_filtered = (~valid_mask).sum()
-    if n_filtered > 0:
-        print(f"Filtering out {n_filtered} cells without parsed perturbation condition embeddings")
+    if (~valid_mask).sum() > 0:
+        print(f"Filtering out {(~valid_mask).sum()} cells without parsed perturbation condition embeddings")
         adata = adata[valid_mask].copy()
     print(f"Cells after embedding filter: {adata.n_obs}")
 
-    # Symbol gene alignment for side inputs. Expression var_names are kept
-    # unchanged for evaluation; only side-input tables use gene symbols.
-    print("Using var['gene_name'] symbols for GO/gene2vec side inputs; keeping expression var_names unchanged.")
-    if "gene_name" in adata.var:
-        adata.var["gene_symbol"] = adata.var["gene_name"].astype(str).values
-        ordered_gene_symbols = adata.var["gene_name"].astype(str).str.upper().tolist()
-    else:
-        ordered_gene_symbols = [str(g).upper() for g in adata.var_names]
-
-    # Deduplicate expression columns only if the side-input gene symbols are duplicated,
-    # while preserving the original expression namespace in adata.var_names.
-    seen: set[str] = set()
-    keep_idx = []
-    for i, symbol in enumerate(ordered_gene_symbols):
-        if symbol in seen:
-            continue
-        seen.add(symbol)
-        keep_idx.append(i)
-    if len(keep_idx) != adata.n_vars:
-        adata = adata[:, keep_idx].copy()
-        ordered_gene_symbols = [ordered_gene_symbols[i] for i in keep_idx]
-
-    cache_dir = Path(args.cache_dir)
-    matched_ids_file, matched_gene2vec_file = build_matched_gene2vec_from_dict(
-        gene2vec=gene2vec_dict,
-        ordered_genes=ordered_gene_symbols,
-        save_dir=out_dir,
-        cache_dir=cache_dir,
-        cache_prefix="norman_symbol",
-        label="Norman expression genes",
-    )
-    gene2go_graph_file = build_symbol_go_graph_from_edge_file(
-        source_graph_file=go_graph_source_file,
-        genes=ordered_gene_symbols,
-        save_dir=out_dir,
-        cache_dir=cache_dir,
-        cache_prefix="norman_symbol_txpert",
-    )
-    # DataManager stores these indices in each condition batch.  The GO prior
-    # consumes them as row indices into the matched expression-gene table, not
-    # as arbitrary perturbation-token IDs.
-    expr_gene_to_idx = {symbol: i for i, symbol in enumerate(ordered_gene_symbols)}
-    adata.uns["perturb_gene_symbol_to_idx"] = {
-        token: expr_gene_to_idx[token]
-        for token in pert_emb
-        if token != "ctrl" and token in expr_gene_to_idx
-    }
-    missing_token_indices = sum(
-        1 for token in pert_emb if token != "ctrl" and token not in expr_gene_to_idx
-    )
-    if missing_token_indices:
-        print(
-            f"  Warning: {missing_token_indices} perturbation tokens are absent from matched expression genes; "
-            "their graph-prior index will be -1."
-        )
-    print(f"Aligned genes: {adata.n_vars}")
-
-    # Perturbation covariates
     perturbation_covariates = {"gene_perturbation": ["pert_gene_1", "pert_gene_2"]}
     perturbation_reps = {"gene_perturbation": rep_key}
+
+    # ==================== Build perturbation graph (GO + STRING, with caching) ====================
+    def _build_perturbation_graph(pert_emb_dict, gene2vec_dict, go_file, ppi_file):
+        """Build a combined GO+STRING graph over perturbation genes only."""
+        pert_genes = sorted(set(
+            token for token in pert_emb_dict if token != "ctrl" and not token.startswith("missing::")
+        ))
+        if not pert_genes:
+            return None, None, None, None, {}
+
+        # Cache key: hash of pert genes + source file paths
+        cache_key = hashlib.sha1(
+            ("\n".join(pert_genes) + f"\n{go_file}\n{ppi_file}").encode()
+        ).hexdigest()[:16]
+        cache_dir = Path(args.output_dir) / "gnn_cache"
+        cache_path = cache_dir / f"pert_graph_{cache_key}.npz"
+        if cache_path.exists():
+            cached = np.load(cache_path)
+            keys = [str(k) for k in cached["g2i_keys"]]
+            vals = [int(v) for v in cached["g2i_vals"]]
+            gene_to_idx = dict(zip(keys, vals))
+            return (
+                jnp.array(cached["node_feats"]),
+                jnp.array(cached["edge_src"]),
+                jnp.array(cached["edge_tgt"]),
+                jnp.array(cached["edge_w"]),
+                gene_to_idx,
+            )
+
+        gene_to_idx = {g: i for i, g in enumerate(pert_genes)}
+        n_nodes = len(pert_genes)
+
+        dim = next(iter(gene2vec_dict.values())).shape[0]
+        node_feats = np.zeros((n_nodes, dim), dtype=np.float32)
+        for i, g in enumerate(pert_genes):
+            node_feats[i] = gene2vec_dict.get(g, np.zeros(dim, dtype=np.float32))
+
+        edge_src, edge_tgt, edge_w = [], [], []
+
+        # GO edges
+        go_path = Path(go_file)
+        if go_path.exists():
+            with open(go_path) as f:
+                reader = csv.DictReader(f)
+                for row in reader:
+                    s, t = str(row.get("source", "")).upper(), str(row.get("target", "")).upper()
+                    if s in gene_to_idx and t in gene_to_idx:
+                        edge_src.append(gene_to_idx[s])
+                        edge_tgt.append(gene_to_idx[t])
+                        edge_w.append(float(row.get("importance", 1.0)))
+
+        # Only load STRING if GO edges are insufficient (same strategy as TxPert)
+        if len(edge_src) < 100:
+            ppi_path = Path(ppi_file)
+            if ppi_path.exists():
+                print("  GO edges < 100, loading STRING PPI supplement...")
+                import pandas as _pd
+                df = _pd.read_parquet(ppi_path)
+                df["regulator"] = df["regulator"].astype(str).str.upper()
+                df["target"] = df["target"].astype(str).str.upper()
+                mask = df["regulator"].isin(gene_to_idx) & df["target"].isin(gene_to_idx)
+                for _, row in df.loc[mask].iterrows():
+                    edge_src.append(gene_to_idx[row["regulator"]])
+                    edge_tgt.append(gene_to_idx[row["target"]])
+                    edge_w.append(float(row.get("weight", 1.0)))
+
+        if not edge_src:
+            return None, None, None, None, {}
+
+        src_arr = np.array(edge_src, dtype=np.int32)
+        tgt_arr = np.array(edge_tgt, dtype=np.int32)
+        w_arr = np.array(edge_w, dtype=np.float32)
+
+        deg = np.zeros(n_nodes, dtype=np.float32)
+        np.add.at(deg, tgt_arr, w_arr)
+        w_norm = w_arr / (deg[tgt_arr] + 1e-8)
+
+        # Save cache
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        np.savez_compressed(
+            cache_path,
+            node_feats=node_feats,
+            edge_src=src_arr,
+            edge_tgt=tgt_arr,
+            edge_w=w_norm,
+            g2i_keys=np.array(list(gene_to_idx.keys())),
+            g2i_vals=np.array(list(gene_to_idx.values()), dtype=np.int32),
+        )
+
+        return (
+            jnp.array(node_feats),
+            jnp.array(src_arr),
+            jnp.array(tgt_arr),
+            jnp.array(w_norm),
+            gene_to_idx,
+        )
+
+    _gnn_node_feats, _gnn_src, _gnn_tgt, _gnn_w, _gnn_gene2node = _build_perturbation_graph(
+        pert_emb, gene2vec_dict, args.pert_gnn_go_file, args.pert_gnn_ppi_file,
+    )
+
+    perturbation_gnn_kwargs = {}
+    if args.pert_gnn_enabled and _gnn_src is not None and _gnn_src.shape[0] > 0:
+        perturbation_gnn_kwargs = {
+            "enabled": True,
+            "hidden_dim": args.pert_gnn_hidden_dim,
+            "num_layers": args.pert_gnn_num_layers,
+            "node_features": _gnn_node_feats,
+            "edge_src": _gnn_src,
+            "edge_tgt": _gnn_tgt,
+            "edge_w": _gnn_w,
+            "pert_gene_to_node": _gnn_gene2node,
+        }
+        print(f"Perturbation GNN graph: {_gnn_node_feats.shape[0]} nodes, {_gnn_src.shape[0]} edges")
+    elif args.pert_gnn_enabled:
+        print("WARNING: Perturbation GNN enabled but no edges found — disabling.")
 
     if args.use_cell_type_condition:
         adata.obs["cell_type"] = "K562"
@@ -690,20 +651,8 @@ def main():
         decoder_dims=args.decoder_dims,
         time_encoder_dims=args.time_encoder_dims,
         optimizer=optax.MultiSteps(optax.adam(args.learning_rate), args.gradient_accumulation_steps),
-        condition_encoder_kwargs={
-            "go_response_kwargs": {
-                "enabled": True,
-                "dim": int(np.load(matched_gene2vec_file).shape[1]),
-                "rho_dim": args.go_response_rho_dim,
-                "max_seq_len": int(adata.n_vars),
-                "gene2vec_file": str(matched_gene2vec_file),
-                "gene_ids_file": str(matched_ids_file),
-                "gene2go_graph_file": str(gene2go_graph_file),
-                "top_k": args.go_response_top_k,
-                "weight_power": args.go_response_weight_power,
-            }
-        },
-        conditioning="film",
+        conditioning=args.conditioning,
+        perturbation_gnn_kwargs=perturbation_gnn_kwargs,
         solver_kwargs={
             "condition_combined_loss_weight": args.condition_combined_loss_weight,
             "match_every_n": args.match_every_n,
@@ -715,6 +664,46 @@ def main():
             "cosine_loss_weight": args.cosine_loss_weight,
         },
     )
+    print("===== Hyperparameter Summary =====")
+    print(f"  solver: otfm")
+    print(f"  seed: {args.seed}")
+    print(f"  fold: {args.fold}")
+    print(f"  num_iterations: {args.num_iterations}")
+    print(f"  batch_size: {args.batch_size}")
+    print(f"  learning_rate: {args.learning_rate}")
+    print(f"  gradient_accumulation_steps: {args.gradient_accumulation_steps}")
+    print(f"  match_every_n: {args.match_every_n}")
+    print(f"")
+    print(f"  test_condition_fraction: {args.test_condition_fraction}")
+    print(f"  val_fraction: {args.val_fraction}")
+    print(f"  train_cell_fraction: {args.train_cell_fraction}")
+    print(f"  test_cell_fraction: {args.test_cell_fraction}")
+    print(f"")
+    print(f"  conditioning: {args.conditioning}")
+    print(f"  hidden_dims: {args.hidden_dims}")
+    print(f"  decoder_dims: {args.decoder_dims}")
+    print(f"  time_encoder_dims: {args.time_encoder_dims}")
+    print(f"  condition_embedding_dim: 256 (default)")
+    print(f"  cond_output_dropout: 0.9 (default)")
+    print(f"  condition_mode: deterministic (default)")
+    print(f"  pooling: attention_token (default)")
+    print(f"  layer_norm_before_concatenation: False (default)")
+    print(f"  probability_path: constant_noise(0.0) (default)")
+    print(f"")
+    print(f"  endpoint_mse_weight: {args.endpoint_mse_weight}")
+    print(f"  condition_combined_loss_weight: {args.condition_combined_loss_weight}")
+    print(f"  condition_mean_delta_weight: {args.condition_mean_delta_weight}")
+    print(f"  cosine_loss_weight: {args.cosine_loss_weight}")
+    print(f"  high_delta_endpoint_weight: {args.high_delta_endpoint_weight}")
+    print(f"  high_delta_max_weight: {args.high_delta_max_weight}")
+    print(f"  terminal_loss_time_power: {args.terminal_loss_time_power}")
+    print(f"")
+    print(f"  pert_gnn_enabled: {args.pert_gnn_enabled}")
+    if args.pert_gnn_enabled:
+        print(f"  pert_gnn_hidden_dim: {args.pert_gnn_hidden_dim}")
+        print(f"  pert_gnn_num_layers: {args.pert_gnn_num_layers}")
+    print(f"  use_cell_type_condition: {args.use_cell_type_condition}")
+    print(f"===================================")
     print(f"Start training: iterations={args.num_iterations}, batch_size={args.batch_size}")
     cf.train(
         num_iterations=args.num_iterations,

@@ -267,6 +267,7 @@ class MyFlow:
         decoder_dropout: float = 0.0,
         vf_act_fn: Callable[[jnp.ndarray], jnp.ndarray] = nn.silu,
         vf_kwargs: dict[str, Any] | None = None,
+        perturbation_gnn_kwargs: dict[str, Any] | None = None,
         # GRN / sparsity options
         grn_path: str | None = None,
         use_nonlinear_path: bool = False,
@@ -475,6 +476,7 @@ class MyFlow:
             decoder_dropout=decoder_dropout,
             layer_norm_before_concatenation=layer_norm_before_concatenation,
             linear_projection_before_concatenation=linear_projection_before_concatenation,
+            perturbation_gnn_kwargs=perturbation_gnn_kwargs or {},
             **vf_kwargs,
         )
 

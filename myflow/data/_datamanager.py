@@ -469,7 +469,9 @@ class DataManager:
             if idx_arr.shape[0] < max_combination_length:
                 pad = np.full((max_combination_length - idx_arr.shape[0], 1), -1, dtype=np.int32)
                 idx_arr = np.concatenate([idx_arr, pad], axis=0)
-            perturb_covar_emb["gene_perturbation_indices"] = idx_arr
+            # Only emit gene_perturbation_indices if the upstream caller expects it
+            if "gene_perturbation_indices" in condition_data:
+                perturb_covar_emb["gene_perturbation_indices"] = idx_arr
         return perturb_covar_emb
 
     @staticmethod

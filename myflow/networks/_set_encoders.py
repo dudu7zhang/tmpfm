@@ -1157,3 +1157,91 @@ class ConditionEncoder(nn_utils.BaseModule):
         attention_mask = jnp.expand_dims(attention_mask, 1)
 
         return mask, attention_mask
+
+
+class PerturbationGNN(nn.Module):
+    """Graph message passing on the combined GO+STRING graph of perturbation genes.
+
+    Operates ONLY on perturbation genes — expression genes are never touched.
+    Uses fixed normalized edge weights (no learned attention for now).
+    """
+
+    hidden_dim: int = 128
+    num_layers: int = 2
+    dropout: float = 0.0
+
+    # Pre-built graph (fixed JAX arrays)
+    # node_features: (N_pert_genes, in_dim)
+    node_features: jnp.ndarray | None = None
+    edge_src: jnp.ndarray | None = None
+    edge_tgt: jnp.ndarray | None = None
+    edge_w: jnp.ndarray | None = None
+    # Map from perturbation gene index → position in node_features
+    pert_gene_to_node: dict[int, int] = dc_field(default_factory=dict)
+
+    def setup(self):
+        self.input_proj = nn.Dense(self.hidden_dim)
+        self.gnn_mlps = [[nn.Dense(self.hidden_dim) for _ in range(2)]
+                         for _ in range(self.num_layers)]
+        self.gnn_norms = [nn.LayerNorm() for _ in range(self.num_layers)]
+        self.drop = nn.Dropout(self.dropout)
+        self.output_proj = nn.Dense(self.hidden_dim)
+
+    @nn.compact
+    def __call__(self, pert_tokens: jnp.ndarray, deterministic: bool = True) -> jnp.ndarray:
+        """Enrich perturbation tokens with graph context.
+
+        Args:
+            pert_tokens: (B, n_genes, in_dim) perturbation gene embeddings
+            deterministic: disable dropout when False
+
+        Returns:
+            (B, n_genes, hidden_dim) enriched tokens
+        """
+        has_graph = (
+            self.edge_src is not None
+            and self.edge_tgt is not None
+            and self.node_features is not None
+            and self.edge_src.shape[0] > 0
+        )
+
+        batch, n_genes, in_dim = pert_tokens.shape
+
+        if not has_graph:
+            h = self.input_proj(pert_tokens)
+            return self.output_proj(nn.silu(h))
+
+        n_nodes = self.node_features.shape[0]
+
+        # Start from gene2vec node features
+        node_feats = jnp.broadcast_to(
+            self.input_proj(self.node_features)[None, :, :],
+            (batch, n_nodes, self.hidden_dim),
+        )
+
+        # Message passing
+        for l in range(self.num_layers):
+            residual = node_feats
+            # Gather source features, weight by edge importance
+            msg = node_feats[:, self.edge_src, :] * self.edge_w[None, :, None]
+            # Aggregate to targets
+            agg = jnp.zeros_like(node_feats).at[:, self.edge_tgt, :].add(msg)
+            # MLP + residual + norm
+            h = self.gnn_mlps[l][0](agg)
+            h = nn.silu(h)
+            h = self.gnn_mlps[l][1](h)
+            h = self.drop(h, deterministic=deterministic)
+            node_feats = self.gnn_norms[l](residual + h)
+
+        # Gather enriched features for the perturbation genes in this batch.
+        # pert_tokens correspond to perturbation genes — we need to map them
+        # to node indices.  Use a simple fallback: mean-pool all nodes.
+        # TODO: per-batch gene-to-node mapping for token-level enrichment.
+        pooled = jnp.mean(node_feats, axis=1)  # (B, hidden_dim)
+        enriched = self.output_proj(nn.silu(pooled))
+        # Broadcast to per-token shape for ConditionEncoder
+        enriched = jnp.broadcast_to(enriched[:, None, :], (batch, n_genes, self.hidden_dim))
+
+        return enriched
+
+

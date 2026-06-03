@@ -199,8 +199,11 @@ def compute_deg_metrics_per_condition(ctrl_adata, real_adata, pred_adata,
             deg_metrics = cal_deg_metrics(ctrl_mean, real_mean, pred_mean, deg_idx)
             deg_overlap = cal_deg_overlap_metrics(ctrl_mean, real_mean, pred_mean)
 
-            # Per-condition Direction Score: sign accuracy on the top-20 real delta genes
-            _, _, cond_ds = cal_delta_metric(ctrl_mean, real_mean, pred_mean, top_k=20)
+            # Per-condition delta metrics (Pearson Δ, Δ20, Δ50, Δ100, Δ1000, DS)
+            cond_pearson_d, cond_pearson_d20, cond_ds = cal_delta_metric(ctrl_mean, real_mean, pred_mean, top_k=20)
+            _, cond_pearson_d50, _ = cal_delta_metric(ctrl_mean, real_mean, pred_mean, top_k=50)
+            _, cond_pearson_d100, _ = cal_delta_metric(ctrl_mean, real_mean, pred_mean, top_k=100)
+            _, cond_pearson_d1000, _ = cal_delta_metric(ctrl_mean, real_mean, pred_mean, top_k=1000)
 
             # DE Spearman: rank correlation of logFC on real DE genes
             de_spearman = float("nan")
@@ -248,6 +251,11 @@ def compute_deg_metrics_per_condition(ctrl_adata, real_adata, pred_adata,
                 **deg_overlap,
                 "de_spearman": de_spearman,
                 "condition_ds": float(cond_ds),
+                "condition_pearson_delta": float(cond_pearson_d) if not np.isnan(cond_pearson_d) else 0.0,
+                "condition_pearson_delta_top20": float(cond_pearson_d20) if not np.isnan(cond_pearson_d20) else 0.0,
+                "condition_pearson_delta_top50": float(cond_pearson_d50) if not np.isnan(cond_pearson_d50) else 0.0,
+                "condition_pearson_delta_top100": float(cond_pearson_d100) if not np.isnan(cond_pearson_d100) else 0.0,
+                "condition_pearson_delta_top1000": float(cond_pearson_d1000) if not np.isnan(cond_pearson_d1000) else 0.0,
             })
         except Exception:
             continue
@@ -718,6 +726,10 @@ def parse_args():
     p.add_argument("--run-name", default=None, help="Optional run name used in saved model/prediction/log filenames.")
     p.add_argument("--gpu-id", default=os.environ.get("CUDA_VISIBLE_DEVICES", "1"), help="Visible GPU id for this run.")
     p.add_argument("--solver", choices=["otfm", "genot"], default="otfm")
+    p.add_argument("--conditioning", choices=["film", "concatenation"], default="concatenation")
+    p.add_argument("--pert-gnn-enabled", action="store_true", help="Enable perturbation-side GNN prior.")
+    p.add_argument("--pert-gnn-hidden-dim", type=int, default=128)
+    p.add_argument("--pert-gnn-num-layers", type=int, default=2)
     p.add_argument("--seed", type=int, default=DEFAULT_SEED)
     p.add_argument("--overwrite", action="store_true")
     p.add_argument("--holdout-cell-line", default="hepg2", help="Cell line to hold out.")
@@ -791,61 +803,16 @@ def parse_args():
         default=5,
         help="Run OT Sinkhorn sample matching every N steps. Set <=0 to disable OT matching.",
     )
-    p.add_argument("--go-response-top-k", type=int, default=20, help="Top GO-similar incoming neighbors per gene.")
-    p.add_argument("--go-response-rho-dim", type=int, default=128, help="GO response prior feature dimension.")
-    p.add_argument("--go-response-weight-power", type=float, default=1.5, help="Sharpen GO similarity weights before normalization.")
-    p.add_argument("--go-response-num-layers", type=int, default=1, help="Number of graph message passing layers in GO prior.")
-    # Perturbation-level PPI graph prior
-    p.add_argument("--pert-graph-enabled", action=argparse.BooleanOptionalAction, default=False, help="Enable perturbation-level PPI graph prior.")
-    p.add_argument("--pert-graph-ppi-file", type=str, default="", help="Path to STRING PPI parquet file.")
-    p.add_argument("--pert-graph-dim", type=int, default=200, help="Perturbation graph encoder dimension.")
-    p.add_argument("--pert-graph-rho-dim", type=int, default=128, help="Perturbation graph rho feature dimension.")
-    p.add_argument("--pert-graph-num-layers", type=int, default=1, help="Number of graph message passing layers in perturbation graph.")
-    # Unified graph (GO + PPI merged into one graph)
-    p.add_argument("--unified-graph", action=argparse.BooleanOptionalAction, default=False, help="Use unified graph merging GO + PPI edges into one graph.")
-    p.add_argument("--unified-ppi-weight", type=float, default=1.0, help="Scaling factor for PPI edge weights in unified graph.")
-    p.add_argument(
-        "--include-perturbation-in-base-condition",
-        action=argparse.BooleanOptionalAction,
-        default=True,
-        help=(
-            "Also feed the perturbation gene embedding into the base condition encoder. "
-            "GO response prior remains enabled; this direct path helps condition-specific responses."
-        ),
-    )
-    p.add_argument(
-        "--cross-cell-delta-prior-weight",
-        type=float,
-        default=0.0,
-        help=(
-            "Blend MyFlow predictions with a training-only cross-cell-line delta prior. "
-            "0 disables it; 1 uses holdout control plus the same perturbation's mean delta "
-            "estimated from non-holdout cell lines."
-        ),
-    )
-    p.add_argument(
-        "--use-cross-cell-delta-condition",
-        action=argparse.BooleanOptionalAction,
-        default=True,
-        help="Add the training-only cross-cell perturbation delta as an explicit MyFlow condition embedding.",
-    )
-    p.add_argument("--cross-cell-delta-condition-dim", type=int, default=128)
-    p.add_argument(
-        "--cache-dir",
-        default=str(ROOT / "data_train" / "myflow_cache" / "replogle"),
-        help="Directory for reusable static MyFlow assets such as matched gene2vec and GO edge indices.",
-    )
     p.add_argument(
         "--gene2vec-dict",
         default=str(ROOT / "data_gab" / "gene2vec_dict.pt"),
-        help="Symbol-keyed gene2vec dictionary used for perturbation and GO-response gene embeddings.",
+        help="Symbol-keyed gene2vec dictionary for perturbation tokens.",
     )
     p.add_argument(
-        "--go-graph-file",
-        default=str(ROOT / "comparison_methods" / "TxPert-main" / "data" / "graphs" / "go" / "go_top_50.csv"),
-        help="TxPert GO graph CSV with source,target,importance columns.",
+        "--cache-dir",
+        default=str(ROOT / "data_train" / "myflow_cache" / "replogle"),
+        help="Directory for reusable static assets.",
     )
-    # p.add_argument("--preset", choices=["jurkat"], default=None, help="Optional preset for known datasets (loads embeddings automatically)")
     return p.parse_args()
 
 
@@ -894,10 +861,9 @@ def main():
         print("Warning: highly_variable column not found in dataset!")
     
     gene2vec_dict_file = _resolve_existing_path([Path(args.gene2vec_dict)], "symbol gene2vec dict")
-    go_graph_source_file = _resolve_existing_path([Path(args.go_graph_file)], "TxPert GO graph CSV")
     emb = load_gene2vec_dict(gene2vec_dict_file)
     gene2vec_keys_upper = {gene.upper() for gene in emb}
-    
+
     print(f"Original Obs shape: {adata.n_obs}")
     valid_mask = adata.obs["target_gene"].astype(str).str.upper().isin(gene2vec_keys_upper) | (
         adata.obs["target_gene"].astype(str) == "non-targeting"
@@ -908,141 +874,32 @@ def main():
 
     adata.var_names = [str(g).strip() for g in adata.var_names]
     adata.var.index = adata.var_names
-    cache_dir = Path(args.cache_dir)
-    output_genes = [str(g) for g in adata.var_names]
-    matched_ids_file, matched_gene2vec_file = build_matched_gene2vec_from_dict(
-        gene2vec=emb,
-        ordered_genes=output_genes,
-        save_dir=out_dir,
-        cache_dir=cache_dir,
-        cache_prefix="replogle_symbol",
-        label="output expression genes",
-    )
-    perturb_genes_for_prior = sorted(
-        {
-            str(g).strip()
-            for g in adata.obs["target_gene"].astype(str).unique().tolist()
-            if str(g).strip() and str(g).strip() != "non-targeting"
-        }
-    )
-    perturb_ids_file, perturb_gene2vec_file = build_matched_gene2vec_from_dict(
-        gene2vec=emb,
-        ordered_genes=perturb_genes_for_prior,
-        save_dir=out_dir,
-        cache_dir=cache_dir,
-        cache_prefix="replogle_symbol_perturb",
-        label="perturbation genes",
-    )
-    with open(perturb_ids_file, "r", encoding="utf-8") as f:
-        _perturb_id_list = [line.strip().upper() for line in f if line.strip()]
-    adata.uns["perturb_gene_symbol_to_idx"] = {s: i for i, s in enumerate(_perturb_id_list)}
 
-    # Build combined gene list (output + perturb, deduplicated) for unified graph encoding
-    combined_genes = list(dict.fromkeys(output_genes + [g.upper() for g in perturb_genes_for_prior]))
-    combined_ids_file, combined_gene2vec_file = build_matched_gene2vec_from_dict(
-        gene2vec=emb,
-        ordered_genes=combined_genes,
-        save_dir=out_dir,
-        cache_dir=cache_dir,
-        cache_prefix="replogle_symbol_combined",
-        label="combined output+perturb genes",
-    )
-    with open(combined_ids_file, "r", encoding="utf-8") as f:
-        _combined_id_list = [line.strip().upper() for line in f if line.strip()]
-    _combined_sym_to_idx = {s: i for i, s in enumerate(_combined_id_list)}
-    adata.uns["combined_perturb_symbol_to_idx"] = {
-        s: _combined_sym_to_idx[s] for s in _perturb_id_list if s in _combined_sym_to_idx
-    }
-
-    gene2go_graph_file = build_symbol_go_graph_from_edge_file(
-        source_graph_file=go_graph_source_file,
-        genes=combined_genes,
-        save_dir=out_dir,
-        cache_dir=cache_dir,
-        cache_prefix="replogle_symbol_txpert_combined",
-    )
-    # Build edge cache: unified (GO+PPI merged) or separate GO + optional PPI
-    ppi_edge_cache_file = None
-    _combined_gene_count = len(_combined_id_list)  # 2055 (output + perturb)
-    if args.unified_graph:
-        ppi_file = Path(args.pert_graph_ppi_file) if args.pert_graph_ppi_file else Path(
-            "/home/zhangshibo24s/cell_flow/comparison_methods/TxPert-main/data/graphs/string/v11.5.parquet"
-        )
-        if not ppi_file.exists():
-            raise FileNotFoundError(f"PPI file not found: {ppi_file}")
-        go_edge_cache_file = build_unified_edge_cache(
-            gene_ids_file=combined_ids_file,
-            gene2go_graph_file=gene2go_graph_file,
-            ppi_file=ppi_file,
-            perturb_genes=set(perturb_genes_for_prior),
-            max_seq_len=_combined_gene_count,  # 2055: full combined list for edge indexing
-            top_k=args.go_response_top_k,
-            weight_power=args.go_response_weight_power,
-            ppi_weight_scale=args.unified_ppi_weight,
-            cache_dir=cache_dir,
-            cache_prefix="replogle_symbol",
-        )
-        print(f"Unified edge cache (GO+PPI): {go_edge_cache_file}")
-    else:
-        go_edge_cache_file = build_go_edge_cache(
-            gene_ids_file=combined_ids_file,
-            gene2go_graph_file=gene2go_graph_file,
-            # The GO prior uses a combined table: output HVGs first, then
-            # perturbation genes that may be absent from HVGs.  Build edges
-            # over the full table so non-HVG perturbation genes get graph
-            # context instead of falling back to raw gene2vec only.
-            max_seq_len=_combined_gene_count,
-            top_k=args.go_response_top_k,
-            weight_power=args.go_response_weight_power,
-            cache_dir=cache_dir,
-            cache_prefix="replogle_symbol_txpert",
-        )
-    print(f"Symbol genes: {adata.n_vars}")
-    print(f"Perturbation prior genes: {len(perturb_genes_for_prior)}")
-
-    # Build perturbation-level PPI edge cache if enabled (separate branch, not unified)
-    if args.pert_graph_enabled and not args.unified_graph:
-        ppi_file = Path(args.pert_graph_ppi_file) if args.pert_graph_ppi_file else Path(
-            "/home/zhangshibo24s/cell_flow/comparison_methods/TxPert-main/data/graphs/string/v11.5.parquet"
-        )
-        if not ppi_file.exists():
-            raise FileNotFoundError(f"PPI file not found: {ppi_file}")
-        ppi_edge_cache_file = build_ppi_edge_cache(
-            gene_ids_file=combined_ids_file,
-            ppi_file=ppi_file,
-            perturb_genes=set(perturb_genes_for_prior),
-            max_seq_len=_combined_gene_count,
-            cache_dir=cache_dir,
-            cache_prefix="replogle_symbol",
-        )
-        print(f"PPI edge cache: {ppi_edge_cache_file}")
-
-    emb_dict = dict(emb)
-    for k, v in list(emb_dict.items()):
-        if torch.is_tensor(v):
-            emb_dict[k] = v.cpu().numpy()
-        else:
-            emb_dict[k] = np.asarray(v)
+    # Simple perturbation gene token embeddings (no GO/PPI prior on expression genes)
     rep_key = "gene2vec_symbol_features"
+    emb_dict = {k: np.asarray(v.cpu().numpy() if torch.is_tensor(v) else v) for k, v in emb.items()}
+    emb_dict["non-targeting"] = np.zeros(next(iter(emb_dict.values())).shape[0], dtype=np.float32)
     adata.uns[rep_key] = emb_dict
     perturbation_covariates = {"gene_perturbation": ["target_gene"]}
     perturbation_reps = {"gene_perturbation": rep_key}
+
+    # Cell type embeddings (one-hot per cell line)
     if args.use_cell_type_condition:
-        perturbation_covariates["cell_type"] = ["cell_type"]
-        cell_lines = ['hepg2', 'jurkat', 'k562', 'rpe1']
+        cell_lines = sorted(adata.obs["cell_type"].drop_duplicates().tolist())
         ct_emb_dict = {}
         for i, cl in enumerate(cell_lines):
-            # one-hot representation for cell lines
-            emb = np.zeros(len(cell_lines), dtype=np.float32)
-            emb[i] = 1.0
-            ct_emb_dict[cl] = emb
+            emb_arr = np.zeros(len(cell_lines), dtype=np.float32)
+            emb_arr[i] = 1.0
+            ct_emb_dict[cl] = emb_arr
         adata.uns["cell_type_embeddings"] = ct_emb_dict
+        perturbation_covariates["cell_type"] = ["cell_type"]
         perturbation_reps["cell_type"] = "cell_type_embeddings"
+
     if args.control_key not in adata.obs:
         adata.obs[args.control_key] = adata.obs["target_gene"].astype(str) == "non-targeting"
 
     print(f"Total cells before split: {adata.n_obs}")
-    
+
     # ================= Leave-One-Cell-Line-Out (LOCO) Split Logic =================
     holdout = args.holdout_cell_line
     assert holdout in adata.obs['cell_type'].unique(), f"Holdout cell line {holdout} not found in adata.obs['cell_type']"
@@ -1151,8 +1008,8 @@ def main():
         raise AssertionError(f"Training set must include {holdout} control/basal cells.")
 
     cross_cell_delta_prior: dict[str, np.ndarray] = {}
-    prior_weight = float(np.clip(args.cross_cell_delta_prior_weight, 0.0, 1.0))
-    use_delta_condition = bool(args.use_cross_cell_delta_condition)
+    prior_weight = 0.0
+    use_delta_condition = False
     if prior_weight > 0 or use_delta_condition:
         other_train = adata_train_full[adata_train_full.obs["cell_type"] != holdout].copy()
         other_ctrl = other_train[other_train.obs[args.control_key].astype(bool)].copy()
@@ -1211,13 +1068,8 @@ def main():
             "use_cross_cell_delta_condition": use_delta_condition,
             "cross_cell_delta_prior_conditions": len(cross_cell_delta_prior),
             "static_cache": {
-                "cache_dir": str(cache_dir),
+                "cache_dir": str(Path(args.cache_dir)),
                 "gene2vec_dict_file": str(gene2vec_dict_file),
-                "go_graph_source_file": str(go_graph_source_file),
-                "matched_gene_ids_file": str(matched_ids_file),
-                "matched_gene2vec_file": str(matched_gene2vec_file),
-                "go_graph_file": str(gene2go_graph_file),
-                "go_edge_cache_file": str(go_edge_cache_file),
             },
             "train_full_before_validation": summarize_adata_split(adata_train_full, args.control_key),
             "train_passed_to_myflow": summarize_adata_split(adata, args.control_key),
@@ -1273,41 +1125,11 @@ def main():
         cond_output_dropout=args.cond_output_dropout,
         layers_before_pool=layers_before_pool,
         optimizer=optax.MultiSteps(optax.chain(optax.clip_by_global_norm(args.gradient_clip_norm), optax.adam(args.learning_rate)), args.gradient_accumulation_steps),
-        condition_encoder_kwargs={
-            "go_response_kwargs": {
-                "enabled": True,
-                "dim": int(np.load(combined_gene2vec_file).shape[1]),
-                "rho_dim": args.go_response_rho_dim,
-                "max_seq_len": int(adata.n_vars),
-                "gene2vec_file": str(combined_gene2vec_file),
-                "gene_ids_file": str(combined_ids_file),
-                "gene2go_graph_file": str(gene2go_graph_file),
-                "edge_cache_file": str(go_edge_cache_file),
-                "perturb_indices_in_combined": list(adata.uns["combined_perturb_symbol_to_idx"].values()),
-                "top_k": args.go_response_top_k,
-                "weight_power": args.go_response_weight_power,
-                "num_layers": args.go_response_num_layers,
-                "exclude_from_base_condition": not args.include_perturbation_in_base_condition,
-            },
-            **({"pert_graph_kwargs": {
-                "enabled": True,
-                "dim": args.pert_graph_dim,
-                "rho_dim": args.pert_graph_rho_dim,
-                "max_seq_len": int(adata.n_vars),
-                "gene2vec_file": str(combined_gene2vec_file),
-                "gene_ids_file": str(combined_ids_file),
-                "ppi_edge_file": str(args.pert_graph_ppi_file) if args.pert_graph_ppi_file else "",
-                "edge_cache_file": str(ppi_edge_cache_file) if ppi_edge_cache_file else "",
-                "perturb_indices_in_combined": list(adata.uns["combined_perturb_symbol_to_idx"].values()),
-                "num_layers": args.pert_graph_num_layers,
-                "exclude_from_base_condition": not args.include_perturbation_in_base_condition,
-            }} if (args.pert_graph_enabled and not args.unified_graph) else {}),
-        },
-        conditioning="film",
+        conditioning=args.conditioning,
         solver_kwargs={
             "condition_combined_loss_weight": args.condition_combined_loss_weight,
-            "condition_combined_sinkhorn_weight": args.condition_combined_sinkhorn_weight,
-            "condition_combined_energy_weight": args.condition_combined_energy_weight,
+            "condition_combined_sinkhorn_weight": 0.0,
+            "condition_combined_energy_weight": 1.0,
             "condition_combined_epsilon": args.condition_combined_epsilon,
             "endpoint_mse_weight": args.endpoint_mse_weight,
             "condition_mean_delta_weight": args.condition_mean_delta_weight,
@@ -1452,22 +1274,14 @@ def main():
         ours_mean = np.array(adata_pred.X.mean(axis=0)).flatten()
 
         mse, mae, l2 = cal_metric(ours_mean, real_mean)
-        pearson_del, pearson_del_top20, _ = cal_delta_metric(ctrl_mean, real_mean, ours_mean, top_k=20)
-        _, pearson_del_top50, _ = cal_delta_metric(ctrl_mean, real_mean, ours_mean, top_k=50)
-        _, pearson_del_top1000, _ = cal_delta_metric(ctrl_mean, real_mean, ours_mean, top_k=1000)
 
         print(f"Basic => MSE: {mse:.6f}, MAE: {mae:.6f}, L2: {l2:.4f}")
-        print(f"Delta => Pearson Δ: {pearson_del:.4f}, Δ20: {pearson_del_top20:.4f}, Δ50: {pearson_del_top50:.4f}, Δ1000: {pearson_del_top1000:.4f}")
         metrics_summary.update(
             {
                 "success": True,
                 "mse": float(mse),
                 "mae": float(mae),
                 "l2": float(l2),
-                "pearson_delta": float(pearson_del),
-                "pearson_delta_top20": float(pearson_del_top20),
-                "pearson_delta_top50": float(pearson_del_top50),
-                "pearson_delta_top1000": float(pearson_del_top1000),
             }
         )
         
@@ -1492,13 +1306,24 @@ def main():
             avg_n_pred_degs = float(deg_df["n_pred_degs"].mean())
             avg_n_overlap = float(deg_df["n_overlap_degs"].mean())
             avg_condition_ds = float(deg_df["condition_ds"].mean())
+            avg_pearson_delta = float(deg_df["condition_pearson_delta"].mean())
+            avg_pearson_delta_top20 = float(deg_df["condition_pearson_delta_top20"].mean())
+            avg_pearson_delta_top50 = float(deg_df["condition_pearson_delta_top50"].mean())
+            avg_pearson_delta_top100 = float(deg_df["condition_pearson_delta_top100"].mean())
+            avg_pearson_delta_top1000 = float(deg_df["condition_pearson_delta_top1000"].mean())
             print(f"Per-condition DEG avg => R²: {avg_r2:.4f}, EV: {avg_ev:.4f}, PCC: {avg_pcc:.4f}, condition_DS: {avg_condition_ds:.4f}, DE-Spearman: {avg_de_spearman:.4f}, avg #DEGs: {avg_ndegs:.0f}")
+            print(f"Per-condition Pearson => Δ: {avg_pearson_delta:.4f}, Δ20: {avg_pearson_delta_top20:.4f}, Δ50: {avg_pearson_delta_top50:.4f}, Δ100: {avg_pearson_delta_top100:.4f}, Δ1000: {avg_pearson_delta_top1000:.4f}")
             print(f"DEG Overlap => Precision: {avg_precision:.4f}, Recall: {avg_recall:.4f}, F1: {avg_f1:.4f}, Jaccard: {avg_jaccard:.4f}, avg #pred-DEGs: {avg_n_pred_degs:.0f}, avg #overlap: {avg_n_overlap:.0f}")
             metrics_summary.update(
                 {
                     "r2_deg": avg_r2,
                     "ev_deg": avg_ev,
                     "pcc_deg": avg_pcc,
+                    "pearson_delta": avg_pearson_delta,
+                    "pearson_delta_top20": avg_pearson_delta_top20,
+                    "pearson_delta_top50": avg_pearson_delta_top50,
+                    "pearson_delta_top100": avg_pearson_delta_top100,
+                    "pearson_delta_top1000": avg_pearson_delta_top1000,
                     "de_spearman": avg_de_spearman,
                     "deg_precision": avg_precision,
                     "deg_recall": avg_recall,
