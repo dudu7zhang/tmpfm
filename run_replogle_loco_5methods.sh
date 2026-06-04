@@ -21,7 +21,7 @@ GPU_MYFLOW=${GPU_MYFLOW:-0}
 GPU_GEARS=${GPU_GEARS:-0}
 GPU_CELLFLOW=${GPU_CELLFLOW:-1}
 GPU_SCDFM=${GPU_SCDFM:-1}
-GPU_TXPERT=${GPU_TXPERT:-1}
+GPU_TXPERT=${GPU_TXPERT:-2}
 
 echo "=========================================="
 echo "Starting Replogle LOCO runs"
@@ -47,19 +47,20 @@ echo "=========================================="
 CUDA_VISIBLE_DEVICES=$GPU_MYFLOW nohup "$FLOW_PY" "$REPO_DIR/scripts/train_myflow_loco_new.py" \
     --output-dir "$REPO_DIR/results/outputs/myflow_replogle_loco_$RUN_ID" \
     --run-name "myflow_replogle_loco_$RUN_ID" \
+    --pert-gnn-enabled \
     --seed 20240508 \
     --n-train-perts 28 \
     --n-test-perts 40 \
     --train-cell-fraction 1.0 \
     --test-cell-fraction 1.0 \
-    --num-iterations 10000 \
+    --num-iterations 30000 \
     --condition-combined-loss-weight 0.003 \
-    --endpoint-mse-weight 0.1 \
-    --cosine-loss-weight 0.1 \
-    --condition-embedding-dim 512 \
-    --cond-output-dropout 0.1 \
-    --gradient-accumulation-steps 20 \
-    --learning-rate 5e-5 \
+    --endpoint-mse-weight 0.5 \
+    --cosine-loss-weight 0.3 \
+    --condition-embedding-dim 256 \
+    --cond-output-dropout 0.05 \
+    --gradient-accumulation-steps 2 \
+    --learning-rate 5e-4 \
     --predict-n-cells 64 \
     > "$LOG_DIR/myflow_loco.log" 2>&1 &
 echo "MyFlow PID: $!"
@@ -76,9 +77,9 @@ echo "MyFlow PID: $!"
 #     > "$LOG_DIR/scdfm_loco.log" 2>&1 &
 # echo "scDFM PID: $!"
 
-CUDA_VISIBLE_DEVICES=$GPU_TXPERT nohup "$CMP_PY" "$COMPARISON_SCRIPTS_DIR/txpert_loco.py" \
-    > "$LOG_DIR/txpert_loco.log" 2>&1 &
-echo "TxPert PID: $!"
+# CUDA_VISIBLE_DEVICES=$GPU_TXPERT nohup "$CMP_PY" "$COMPARISON_SCRIPTS_DIR/txpert_loco.py" \
+#     > "$LOG_DIR/txpert_loco.log" 2>&1 &
+# echo "TxPert PID: $!"
 
 echo "=========================================="
 echo "Launched all runs."

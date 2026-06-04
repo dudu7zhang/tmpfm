@@ -20,8 +20,7 @@ class ConditionalVelocityField(nn.Module):
     """Conditional velocity field for flow matching.
 
     Encodes time, cell state, and perturbation condition independently,
-    then combines them through concat/film/resnet conditioning.
-    No per-gene prior modulation — priors belong on the perturbation side only.
+    then fuses them through gene-level self-attention + condition→gene cross-attention.
     """
 
     output_dim: int
@@ -52,15 +51,20 @@ class ConditionalVelocityField(nn.Module):
     layer_norm_before_concatenation: bool = False
     linear_projection_before_concatenation: bool = False
 
-    # Perturbation-side GNN prior (optional)
+    # Perturbation-side GNN prior: GO+STRING graph over perturbation genes
     perturbation_gnn_kwargs: dict[str, Any] = dc_field(default_factory=lambda: {})
-
-    # Delta-gated encoding: focus on genes that deviate from control
-    delta_gate_enabled: bool = True
-    delta_gate_init_temp: float = 0.1  # temperature for |delta| softmax
 
     # Perturbation-conditioned gene mask: sparse velocity output
     gene_mask_enabled: bool = True
+
+    # Gene-level self-attention / cross-attention
+    gene_attn_dim: int = 16
+    gene_self_attn_heads: int = 4
+    gene_self_attn_layers: int = 0  # O(d²), 0 to skip
+    gene_self_attn_dropout: float = 0.0
+    cross_attn_heads: int = 4
+    cross_attn_layers: int = 1
+    cross_attn_dropout: float = 0.0
 
     def _resolve_kwargs(self, value: Any) -> dict[str, Any]:
         """Resolve a dc_field default_factory or plain dict to a real dict."""
@@ -89,15 +93,24 @@ class ConditionalVelocityField(nn.Module):
             **condition_encoder_kwargs,
         )
 
-        # Perturbation-side GNN: enriches perturbation tokens with GO+STRING graph context
-        gnn_kwargs = self._resolve_kwargs(self.perturbation_gnn_kwargs)
-        if gnn_kwargs.get("enabled", False):
-            gnn_kwargs.pop("enabled", None)
-            self.perturbation_gnn = PerturbationGNN(**gnn_kwargs)
-            self._gnn_covariate_key = gnn_kwargs.get("covariate_key", "gene_perturbation")
+        # ---- Perturbation-side GNN: learnable node embeddings + GO/STRING graph ----
+        gnn_config = getattr(self, 'x_gnn_config', None) or {}
+        n_pert = gnn_config.get('num_pert_genes', 0)
+        if n_pert > 0:
+            self.pert_embeddings = self.param(
+                "pert_embeddings",
+                nn.initializers.normal(0.02),
+                (n_pert, self.gene_attn_dim),
+            )
+            self.perturbation_gnn = PerturbationGNN(
+                hidden_dim=self.gene_attn_dim,
+                num_layers=2,
+                edge_src=gnn_config.get('edge_src'),
+                edge_tgt=gnn_config.get('edge_tgt'),
+                edge_w=gnn_config.get('edge_w'),
+            )
         else:
             self.perturbation_gnn = None
-            self._gnn_covariate_key = "gene_perturbation"
 
         self.layer_cond_output_dropout = nn.Dropout(rate=self.cond_output_dropout)
         self.layer_norm_condition = nn.LayerNorm() if self.layer_norm_before_concatenation else lambda x: x
@@ -110,12 +123,53 @@ class ConditionalVelocityField(nn.Module):
         )
         self.layer_norm_time = nn.LayerNorm() if self.layer_norm_before_concatenation else lambda x: x
 
-        self.x_encoder = MLPBlock(
-            dims=self.hidden_dims,
-            act_fn=self.act_fn,
-            dropout_rate=self.hidden_dropout,
-            act_last_layer=(False if self.linear_projection_before_concatenation else True),
+        # ---- Learned gene identity embedding ----
+        self.gene_val_proj = nn.Dense(self.gene_attn_dim)  # expression value → dim
+        self.gene_id_emb = self.param(
+            "gene_id_emb",
+            nn.initializers.normal(0.02),
+            (self.output_dim, self.gene_attn_dim),
         )
+        self.gene_attn_norms = [
+            nn.LayerNorm() for _ in range(self.gene_self_attn_layers)
+        ]
+        self.gene_attns = [
+            nn.MultiHeadDotProductAttention(
+                num_heads=self.gene_self_attn_heads,
+                qkv_features=self.gene_attn_dim,
+                dropout_rate=self.gene_self_attn_dropout,
+            )
+            for _ in range(self.gene_self_attn_layers)
+        ]
+        self.gene_ffn_norms = [
+            nn.LayerNorm() for _ in range(self.gene_self_attn_layers)
+        ]
+        self.gene_ffn_in = [
+            nn.Dense(self.gene_attn_dim * 4) for _ in range(self.gene_self_attn_layers)
+        ]
+        self.gene_ffn_out = [
+            nn.Dense(self.gene_attn_dim) for _ in range(self.gene_self_attn_layers)
+        ]
+
+        # ---- Condition → gene cross-attention (stackable) ----
+        self.cross_q_projs = [
+            nn.Dense(self.gene_attn_dim) for _ in range(self.cross_attn_layers)
+        ]
+        self.cross_attns = [
+            nn.MultiHeadDotProductAttention(
+                num_heads=self.cross_attn_heads,
+                qkv_features=self.gene_attn_dim,
+                dropout_rate=self.cross_attn_dropout,
+            )
+            for _ in range(self.cross_attn_layers)
+        ]
+        self.cross_out_norms = [
+            nn.LayerNorm() for _ in range(self.cross_attn_layers)
+        ]
+
+        # ---- Project cross-attn output to hidden_dims[-1] ----
+        self.fusion_proj = nn.Dense(self.hidden_dims[-1])
+
         self.layer_norm_x = nn.LayerNorm() if self.layer_norm_before_concatenation else lambda x: x
 
         self.decoder = MLPBlock(
@@ -127,17 +181,13 @@ class ConditionalVelocityField(nn.Module):
 
         self.output_layer = nn.Dense(self.output_dim)
 
-        # Gene-level attention: soft focus on genes with expression deviating from mean
-        self.delta_temp = self.param("delta_temp", nn.initializers.constant(0.1), ())
-        self.delta_scale = self.param("delta_scale", nn.initializers.zeros, ())
-
         # Perturbation-conditioned gene mask: learns which genes each perturbation affects
         self.gene_mask_head = nn.Dense(self.output_dim) if self.gene_mask_enabled else None
 
         if self.conditioning == "film":
             self.film_block = FilmBlock(
                 input_dim=self.hidden_dims[-1],
-                cond_dim=self.time_encoder_dims[-1] + self.condition_embedding_dim,
+                cond_dim=self.time_encoder_dims[-1],
                 **conditioning_kwargs,
             )
         elif self.conditioning == "resnet":
@@ -161,12 +211,15 @@ class ConditionalVelocityField(nn.Module):
     ) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]:
         squeeze = x_t.ndim == 1
 
-        # Apply perturbation-side GNN to enrich perturbation tokens
-        if self.perturbation_gnn is not None and self._gnn_covariate_key in cond:
+        # Perturbation gene: look up learnable embeddings by index, then GNN
+        if self.perturbation_gnn is not None and "gene_perturbation_indices" in cond:
             cond = dict(cond)
-            cond[self._gnn_covariate_key] = self.perturbation_gnn(
-                cond[self._gnn_covariate_key], deterministic=not train,
+            cond["gene_perturbation"] = self.perturbation_gnn(
+                cond["gene_perturbation_indices"],
+                self.pert_embeddings,
+                deterministic=not train,
             )
+            cond.pop("gene_perturbation_indices", None)
 
         if cond:
             cond_mean, cond_logvar = self.condition_encoder(cond, training=train)
@@ -183,16 +236,50 @@ class ConditionalVelocityField(nn.Module):
         cond_embedding = self.layer_cond_output_dropout(cond_embedding, deterministic=not train)
 
         t_encoded = sinusoidal_time_encoder(t, time_freqs=self.time_freqs, time_max_period=self.time_max_period)
+        if squeeze:
+            t_encoded = t_encoded[None, :]  # (freqs,) → (1, freqs)
         t_encoded = self.time_encoder(t_encoded, training=train)
 
-        # Delta-gated input: amplify genes whose expression deviates from batch mean.
-        # Exploits the sparsity of perturbation response — most genes don't change.
-        batch_mean = jnp.mean(x_t, axis=0, keepdims=True)
-        delta = x_t - batch_mean
-        w = jax.nn.softmax(jnp.abs(delta) / (jnp.abs(self.delta_temp) + 1e-8), axis=-1)
-        x_t = x_t * (1.0 + self.delta_scale * w)
+        # ---- Broadcast cond_embedding to match cell batch size ----
+        if squeeze:
+            pass  # already (1, d) from condition_encoder
+        elif cond_embedding.shape[0] != x_t.shape[0]:
+            cond_embedding = jnp.tile(cond_embedding, (x_t.shape[0], 1))
 
-        x_encoded = self.x_encoder(x_t, training=train)
+        # ---- Gene embedding: expression value + learnable gene identity ----
+        if squeeze:
+            x_t = x_t[None, :]  # (d,) → (1, d)
+        h_val = self.gene_val_proj(x_t[:, :, None])   # (B, d, 16) — what
+        h_id = self.gene_id_emb[None, :, :]           # (1, d, 16) — who
+        h_genes = h_val + h_id
+
+        for i in range(self.gene_self_attn_layers):
+            # Self-attention
+            residual = h_genes
+            h_genes = self.gene_attn_norms[i](h_genes)
+            h_genes = self.gene_attns[i](h_genes, deterministic=not train)
+            h_genes = h_genes + residual
+            # FFN
+            residual = h_genes
+            h_genes = self.gene_ffn_norms[i](h_genes)
+            h_genes = nn.relu(self.gene_ffn_in[i](h_genes))
+            h_genes = self.gene_ffn_out[i](h_genes)
+            h_genes = h_genes + residual
+
+        # ---- Condition → gene cross-attention: condition selects relevant genes ----
+        # z_c (now broadcast to cell batch) queries the gene feature sequence
+        h_cross = cond_embedding
+        for i in range(self.cross_attn_layers):
+            z_q = self.cross_q_projs[i](h_cross)[:, None, :]       # (B, 1, gene_attn_dim)
+            h_cross = self.cross_attns[i](
+                inputs_q=z_q, inputs_kv=h_genes, deterministic=not train,
+            )                                                       # (B, 1, gene_attn_dim)
+            h_cross = jnp.squeeze(h_cross, axis=1)                  # (B, gene_attn_dim)
+            h_cross = self.cross_out_norms[i](h_cross)
+
+        # ---- Project to hidden_dims[-1] ----
+        x_encoded = self.fusion_proj(h_cross)
+        x_encoded = self.act_fn(x_encoded)
 
         t_encoded = self.layer_norm_time(t_encoded)
         x_encoded = self.layer_norm_x(x_encoded)
@@ -200,15 +287,13 @@ class ConditionalVelocityField(nn.Module):
 
         if squeeze:
             cond_embedding = jnp.squeeze(cond_embedding)
-        elif cond_embedding.shape[0] != x_t.shape[0]:
-            cond_embedding = jnp.tile(cond_embedding, (x_t.shape[0], 1))
 
         if self.conditioning == "concatenation":
-            out = jnp.concatenate((t_encoded, x_encoded, cond_embedding), axis=-1)
+            out = jnp.concatenate((t_encoded, x_encoded), axis=-1)
         elif self.conditioning == "film":
-            out = self.film_block(x_encoded, jnp.concatenate((t_encoded, cond_embedding), axis=-1))
+            out = self.film_block(x_encoded, t_encoded)
         elif self.conditioning == "resnet":
-            out = self.resnet_block(x_encoded, jnp.concatenate((t_encoded, cond_embedding), axis=-1))
+            out = self.resnet_block(x_encoded, t_encoded)
 
         out = self.decoder(out, training=train)
         velocity = self.output_layer(out)
@@ -218,6 +303,9 @@ class ConditionalVelocityField(nn.Module):
         if self.gene_mask_head is not None:
             gene_mask = nn.sigmoid(self.gene_mask_head(cond_embedding))
             velocity = velocity * gene_mask
+
+        if squeeze:
+            velocity = jnp.squeeze(velocity, axis=0)
 
         return velocity, cond_mean, cond_logvar
 
@@ -266,14 +354,6 @@ class ConditionalVelocityField(nn.Module):
     @time_encoder.setter
     def time_encoder(self, encoder):
         self._time_encoder = encoder
-
-    @property
-    def x_encoder(self):
-        return self._x_encoder
-
-    @x_encoder.setter
-    def x_encoder(self, encoder):
-        self._x_encoder = encoder
 
     @property
     def decoder(self):

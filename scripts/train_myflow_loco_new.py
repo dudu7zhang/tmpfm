@@ -707,7 +707,7 @@ def parse_args():
         default="{}",
         help="JSON mapping perturbation_name -> adata.uns key containing embeddings (optional)",
     )
-    p.add_argument("--num-iterations", type=int, default=10000)
+    p.add_argument("--num-iterations", type=int, default=20000)
     p.add_argument("--batch-size", type=int, default=256)
     p.add_argument("--predict-batch-size", type=int, default=256)
     p.add_argument(
@@ -728,8 +728,16 @@ def parse_args():
     p.add_argument("--solver", choices=["otfm", "genot"], default="otfm")
     p.add_argument("--conditioning", choices=["film", "concatenation"], default="concatenation")
     p.add_argument("--pert-gnn-enabled", action="store_true", help="Enable perturbation-side GNN prior.")
-    p.add_argument("--pert-gnn-hidden-dim", type=int, default=128)
+    p.add_argument("--pert-gnn-hidden-dim", type=int, default=16)
     p.add_argument("--pert-gnn-num-layers", type=int, default=2)
+    p.add_argument(
+        "--pert-gnn-go-file",
+        default=str(ROOT / "comparison_methods" / "TxPert-main" / "data" / "graphs" / "go" / "go_top_50.csv"),
+    )
+    p.add_argument(
+        "--pert-gnn-ppi-file",
+        default=str(ROOT / "comparison_methods" / "TxPert-main" / "data" / "graphs" / "string" / "v11.5.parquet"),
+    )
     p.add_argument("--seed", type=int, default=DEFAULT_SEED)
     p.add_argument("--overwrite", action="store_true")
     p.add_argument("--holdout-cell-line", default="hepg2", help="Cell line to hold out.")
@@ -894,6 +902,71 @@ def main():
         adata.uns["cell_type_embeddings"] = ct_emb_dict
         perturbation_covariates["cell_type"] = ["cell_type"]
         perturbation_reps["cell_type"] = "cell_type_embeddings"
+
+    # Build gene_name → int index mapping for perturbation genes
+    _pert_genes = sorted(set(k for k in emb_dict if k != "non-targeting" and not k.startswith("missing::")))
+    _pert_gene_to_idx = {g: i for i, g in enumerate(_pert_genes)}
+    adata.uns["perturb_gene_symbol_to_idx"] = _pert_gene_to_idx
+    print(f"Perturbation gene index mapping: {len(_pert_gene_to_idx)} genes")
+
+    def _build_perturbation_graph(pert_genes, go_file, ppi_file):
+        """Build GO+STRING graph edges over perturbation genes. Returns (edge_src, edge_tgt, edge_w)."""
+        pert_genes = sorted(set(pert_genes))
+        if not pert_genes:
+            return None, None, None
+        gene_to_idx = {g: i for i, g in enumerate(pert_genes)}
+        n_nodes = len(pert_genes)
+        edge_src, edge_tgt, edge_w = [], [], []
+        go_path = Path(go_file)
+        if go_path.exists():
+            with open(go_path) as f:
+                reader = csv.DictReader(f)
+                for row in reader:
+                    s, t = str(row.get("source", "")).upper(), str(row.get("target", "")).upper()
+                    if s in gene_to_idx and t in gene_to_idx:
+                        edge_src.append(gene_to_idx[s])
+                        edge_tgt.append(gene_to_idx[t])
+                        edge_w.append(float(row.get("importance", 1.0)))
+        if len(edge_src) < 100:
+            ppi_path = Path(ppi_file)
+            if ppi_path.exists():
+                print("  GO edges < 100, loading STRING PPI supplement...")
+                import pandas as _pd
+                df = _pd.read_parquet(ppi_path)
+                df["regulator"] = df["regulator"].astype(str).str.upper()
+                df["target"] = df["target"].astype(str).str.upper()
+                mask = df["regulator"].isin(gene_to_idx) & df["target"].isin(gene_to_idx)
+                for _, row in df.loc[mask].iterrows():
+                    edge_src.append(gene_to_idx[row["regulator"]])
+                    edge_tgt.append(gene_to_idx[row["target"]])
+                    edge_w.append(float(row.get("weight", 1.0)))
+        if not edge_src:
+            return None, None, None
+        src_arr = np.array(edge_src, dtype=np.int32)
+        tgt_arr = np.array(edge_tgt, dtype=np.int32)
+        w_arr = np.array(edge_w, dtype=np.float32)
+        deg = np.zeros(n_nodes, dtype=np.float32)
+        np.add.at(deg, tgt_arr, w_arr)
+        w_norm = w_arr / (deg[tgt_arr] + 1e-8)
+        return np.array(src_arr, dtype=np.int32), np.array(tgt_arr, dtype=np.int32), np.array(w_norm, dtype=np.float32)
+
+    _gnn_src, _gnn_tgt, _gnn_w = _build_perturbation_graph(
+        _pert_genes, args.pert_gnn_go_file, args.pert_gnn_ppi_file,
+    )
+    perturbation_gnn_kwargs = {}
+    if args.pert_gnn_enabled and _gnn_src is not None and _gnn_src.shape[0] > 0:
+        perturbation_gnn_kwargs = {
+            "enabled": True,
+            "hidden_dim": args.pert_gnn_hidden_dim,
+            "num_layers": args.pert_gnn_num_layers,
+            "num_pert_genes": len(_pert_gene_to_idx),
+            "edge_src": _gnn_src,
+            "edge_tgt": _gnn_tgt,
+            "edge_w": _gnn_w,
+        }
+        print(f"Perturbation GNN graph: {len(_pert_gene_to_idx)} nodes, {_gnn_src.shape[0]} edges")
+    elif args.pert_gnn_enabled:
+        print("WARNING: Perturbation GNN enabled but no edges found — disabling.")
 
     if args.control_key not in adata.obs:
         adata.obs[args.control_key] = adata.obs["target_gene"].astype(str) == "non-targeting"
@@ -1126,6 +1199,7 @@ def main():
         layers_before_pool=layers_before_pool,
         optimizer=optax.MultiSteps(optax.chain(optax.clip_by_global_norm(args.gradient_clip_norm), optax.adam(args.learning_rate)), args.gradient_accumulation_steps),
         conditioning=args.conditioning,
+        perturbation_gnn_kwargs=perturbation_gnn_kwargs,
         solver_kwargs={
             "condition_combined_loss_weight": args.condition_combined_loss_weight,
             "condition_combined_sinkhorn_weight": 0.0,

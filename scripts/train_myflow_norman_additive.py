@@ -291,7 +291,7 @@ def parse_args():
         help="Symbol-keyed gene2vec dictionary for perturbation tokens.",
     )
     p.add_argument("--pert-gnn-enabled", action="store_true", help="Enable perturbation-side GNN prior.")
-    p.add_argument("--pert-gnn-hidden-dim", type=int, default=128)
+    p.add_argument("--pert-gnn-hidden-dim", type=int, default=16)
     p.add_argument("--pert-gnn-num-layers", type=int, default=2)
     p.add_argument(
         "--pert-gnn-go-file",
@@ -391,42 +391,21 @@ def main():
     perturbation_covariates = {"gene_perturbation": ["pert_gene_1", "pert_gene_2"]}
     perturbation_reps = {"gene_perturbation": rep_key}
 
-    # ==================== Build perturbation graph (GO + STRING, with caching) ====================
-    def _build_perturbation_graph(pert_emb_dict, gene2vec_dict, go_file, ppi_file):
-        """Build a combined GO+STRING graph over perturbation genes only."""
-        pert_genes = sorted(set(
-            token for token in pert_emb_dict if token != "ctrl" and not token.startswith("missing::")
-        ))
-        if not pert_genes:
-            return None, None, None, None, {}
+    # Build gene_name → int index mapping for perturbation genes (used by DataManager to emit indices)
+    _pert_genes = sorted(set(k for k in pert_emb if k != "ctrl" and not k.startswith("missing::")))
+    _pert_gene_to_idx = {g: i for i, g in enumerate(_pert_genes)}
+    adata.uns["perturb_gene_symbol_to_idx"] = _pert_gene_to_idx
+    print(f"Perturbation gene index mapping: {len(_pert_gene_to_idx)} genes")
 
-        # Cache key: hash of pert genes + source file paths
-        cache_key = hashlib.sha1(
-            ("\n".join(pert_genes) + f"\n{go_file}\n{ppi_file}").encode()
-        ).hexdigest()[:16]
-        cache_dir = Path(args.output_dir) / "gnn_cache"
-        cache_path = cache_dir / f"pert_graph_{cache_key}.npz"
-        if cache_path.exists():
-            cached = np.load(cache_path)
-            keys = [str(k) for k in cached["g2i_keys"]]
-            vals = [int(v) for v in cached["g2i_vals"]]
-            gene_to_idx = dict(zip(keys, vals))
-            return (
-                jnp.array(cached["node_feats"]),
-                jnp.array(cached["edge_src"]),
-                jnp.array(cached["edge_tgt"]),
-                jnp.array(cached["edge_w"]),
-                gene_to_idx,
-            )
+    # ==================== Build perturbation graph (GO + STRING, with caching) ====================
+    def _build_perturbation_graph(pert_genes, go_file, ppi_file):
+        """Build GO+STRING graph edges over perturbation genes. Returns (edge_src, edge_tgt, edge_w)."""
+        pert_genes = sorted(set(pert_genes))
+        if not pert_genes:
+            return None, None, None
 
         gene_to_idx = {g: i for i, g in enumerate(pert_genes)}
         n_nodes = len(pert_genes)
-
-        dim = next(iter(gene2vec_dict.values())).shape[0]
-        node_feats = np.zeros((n_nodes, dim), dtype=np.float32)
-        for i, g in enumerate(pert_genes):
-            node_feats[i] = gene2vec_dict.get(g, np.zeros(dim, dtype=np.float32))
-
         edge_src, edge_tgt, edge_w = [], [], []
 
         # GO edges
@@ -441,7 +420,7 @@ def main():
                         edge_tgt.append(gene_to_idx[t])
                         edge_w.append(float(row.get("importance", 1.0)))
 
-        # Only load STRING if GO edges are insufficient (same strategy as TxPert)
+        # STRING PPI supplement if GO edges are sparse
         if len(edge_src) < 100:
             ppi_path = Path(ppi_file)
             if ppi_path.exists():
@@ -457,38 +436,18 @@ def main():
                     edge_w.append(float(row.get("weight", 1.0)))
 
         if not edge_src:
-            return None, None, None, None, {}
+            return None, None, None
 
         src_arr = np.array(edge_src, dtype=np.int32)
         tgt_arr = np.array(edge_tgt, dtype=np.int32)
         w_arr = np.array(edge_w, dtype=np.float32)
-
         deg = np.zeros(n_nodes, dtype=np.float32)
         np.add.at(deg, tgt_arr, w_arr)
         w_norm = w_arr / (deg[tgt_arr] + 1e-8)
+        return jnp.array(src_arr), jnp.array(tgt_arr), jnp.array(w_norm)
 
-        # Save cache
-        cache_dir.mkdir(parents=True, exist_ok=True)
-        np.savez_compressed(
-            cache_path,
-            node_feats=node_feats,
-            edge_src=src_arr,
-            edge_tgt=tgt_arr,
-            edge_w=w_norm,
-            g2i_keys=np.array(list(gene_to_idx.keys())),
-            g2i_vals=np.array(list(gene_to_idx.values()), dtype=np.int32),
-        )
-
-        return (
-            jnp.array(node_feats),
-            jnp.array(src_arr),
-            jnp.array(tgt_arr),
-            jnp.array(w_norm),
-            gene_to_idx,
-        )
-
-    _gnn_node_feats, _gnn_src, _gnn_tgt, _gnn_w, _gnn_gene2node = _build_perturbation_graph(
-        pert_emb, gene2vec_dict, args.pert_gnn_go_file, args.pert_gnn_ppi_file,
+    _gnn_src, _gnn_tgt, _gnn_w = _build_perturbation_graph(
+        _pert_genes, args.pert_gnn_go_file, args.pert_gnn_ppi_file,
     )
 
     perturbation_gnn_kwargs = {}
@@ -497,13 +456,12 @@ def main():
             "enabled": True,
             "hidden_dim": args.pert_gnn_hidden_dim,
             "num_layers": args.pert_gnn_num_layers,
-            "node_features": _gnn_node_feats,
+            "num_pert_genes": len(_pert_gene_to_idx),
             "edge_src": _gnn_src,
             "edge_tgt": _gnn_tgt,
             "edge_w": _gnn_w,
-            "pert_gene_to_node": _gnn_gene2node,
         }
-        print(f"Perturbation GNN graph: {_gnn_node_feats.shape[0]} nodes, {_gnn_src.shape[0]} edges")
+        print(f"Perturbation GNN graph: {len(_pert_gene_to_idx)} nodes, {_gnn_src.shape[0]} edges")
     elif args.pert_gnn_enabled:
         print("WARNING: Perturbation GNN enabled but no edges found — disabling.")
 

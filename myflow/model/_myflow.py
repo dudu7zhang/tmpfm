@@ -479,6 +479,14 @@ class MyFlow:
             perturbation_gnn_kwargs=perturbation_gnn_kwargs or {},
             **vf_kwargs,
         )
+        # Bypass Flax field system: directly inject GNN config
+        object.__setattr__(self.vf, 'x_gnn_config', {
+            'num_pert_genes': int((perturbation_gnn_kwargs or {}).get('num_pert_genes', 0)),
+            'edge_src': (perturbation_gnn_kwargs or {}).get('edge_src'),
+            'edge_tgt': (perturbation_gnn_kwargs or {}).get('edge_tgt'),
+            'edge_w': (perturbation_gnn_kwargs or {}).get('edge_w'),
+            'pert_gene_to_idx': (perturbation_gnn_kwargs or {}).get('pert_gene_to_idx', {}),
+        })
 
         probability_path, noise = next(iter(probability_path.items()))
         if probability_path == "constant_noise":
