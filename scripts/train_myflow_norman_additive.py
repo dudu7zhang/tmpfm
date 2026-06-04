@@ -283,6 +283,10 @@ def parse_args():
     p.add_argument("--hidden-dims", type=int, nargs="+", default=[512, 512, 512])
     p.add_argument("--decoder-dims", type=int, nargs="+", default=[1024, 1024, 1024])
     p.add_argument("--time-encoder-dims", type=int, nargs="+", default=[512, 512, 512])
+    p.add_argument("--cross-attn-layers", type=int, default=1, help="Number of cross-attention layers (default: 1).")
+    p.add_argument("--gene-attn-dim", type=int, default=16, help="Dimension of gene attention embeddings (default: 16).")
+    p.add_argument("--gene-self-attn-layers", type=int, default=0, help="Number of gene self-attention layers (default: 0).")
+    p.add_argument("--cross-attn-heads", type=int, default=4, help="Number of cross-attention heads (default: 4).")
     p.add_argument("--gradient-accumulation-steps", type=int, default=1)
     p.add_argument("--match-every-n", type=int, default=20, help="Run OT Sinkhorn matching every N steps.")
     p.add_argument(
@@ -608,6 +612,10 @@ def main():
         hidden_dims=args.hidden_dims,
         decoder_dims=args.decoder_dims,
         time_encoder_dims=args.time_encoder_dims,
+        cross_attn_layers=args.cross_attn_layers,
+        gene_attn_dim=args.gene_attn_dim,
+        gene_self_attn_layers=args.gene_self_attn_layers,
+        cross_attn_heads=args.cross_attn_heads,
         optimizer=optax.MultiSteps(optax.adam(args.learning_rate), args.gradient_accumulation_steps),
         conditioning=args.conditioning,
         perturbation_gnn_kwargs=perturbation_gnn_kwargs,
@@ -641,6 +649,10 @@ def main():
     print(f"  hidden_dims: {args.hidden_dims}")
     print(f"  decoder_dims: {args.decoder_dims}")
     print(f"  time_encoder_dims: {args.time_encoder_dims}")
+    print(f"  cross_attn_layers: {args.cross_attn_layers}")
+    print(f"  gene_attn_dim: {args.gene_attn_dim}")
+    print(f"  gene_self_attn_layers: {args.gene_self_attn_layers}")
+    print(f"  cross_attn_heads: {args.cross_attn_heads}")
     print(f"  condition_embedding_dim: 256 (default)")
     print(f"  cond_output_dropout: 0.9 (default)")
     print(f"  condition_mode: deterministic (default)")

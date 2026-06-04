@@ -17,7 +17,7 @@ mkdir -p "$LOG_DIR"
 FLOW_PY="${FLOW_PY:-$HOME/miniconda3/envs/flow/bin/python}"
 CMP_PY="${CMP_PY:-$HOME/miniconda3/envs/cmp_methods/bin/python}"
 
-GPU_MYFLOW=${GPU_MYFLOW:-0}
+GPU_MYFLOW=${GPU_MYFLOW:-4}
 GPU_GEARS=${GPU_GEARS:-0}
 GPU_CELLFLOW=${GPU_CELLFLOW:-1}
 GPU_SCDFM=${GPU_SCDFM:-2}

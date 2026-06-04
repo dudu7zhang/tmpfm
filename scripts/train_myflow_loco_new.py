@@ -768,7 +768,7 @@ def parse_args():
     p.add_argument(
         "--use-cell-type-condition",
         action=argparse.BooleanOptionalAction,
-        default=True,
+        default=False,
         help="Use cell_type as an explicit model condition. Use --no-use-cell-type-condition for strict baseline.",
     )
     p.add_argument(
@@ -800,7 +800,11 @@ def parse_args():
     p.add_argument("--hidden-dims", type=int, nargs="+", default=[512, 512, 512])
     p.add_argument("--decoder-dims", type=int, nargs="+", default=[1024, 1024, 1024])
     p.add_argument("--time-encoder-dims", type=int, nargs="+", default=[512, 512, 512])
-    p.add_argument("--condition-embedding-dim", type=int, default=512, help="Dimension of condition embedding (default: 512, was 256).")
+    p.add_argument("--condition-embedding-dim", type=int, default=32, help="Dimension of condition embedding (default: 512, was 256).")
+    p.add_argument("--cross-attn-layers", type=int, default=2, help="Number of cross-attention layers (default: 2 for LOCO).")
+    p.add_argument("--gene-attn-dim", type=int, default=64, help="Dimension of gene attention embeddings (default: 64 for LOCO).")
+    p.add_argument("--gene-self-attn-layers", type=int, default=1, help="Number of gene self-attention layers (default: 1 for LOCO).")
+    p.add_argument("--cross-attn-heads", type=int, default=8, help="Number of cross-attention heads (default: 8 for LOCO).")
     p.add_argument("--cond-output-dropout", type=float, default=0.1)
     p.add_argument("--gradient-accumulation-steps", type=int, default=20)
     p.add_argument("--gradient-clip-norm", type=float, default=1.0, help="Max gradient norm for clipping.")
@@ -904,7 +908,11 @@ def main():
         perturbation_reps["cell_type"] = "cell_type_embeddings"
 
     # Build gene_name → int index mapping for perturbation genes
-    _pert_genes = sorted(set(k for k in emb_dict if k != "non-targeting" and not k.startswith("missing::")))
+    # Only include genes that actually appear as perturbations in the data,
+    # NOT the full gene2vec dictionary (24K genes).  Building the GNN over
+    # 24K nodes causes over-smoothing and makes all gene embeddings identical.
+    _pert_genes_raw = sorted(set(adata.obs["target_gene"].astype(str).unique()) - {"non-targeting"})
+    _pert_genes = [g for g in _pert_genes_raw if g in emb_dict]
     _pert_gene_to_idx = {g: i for i, g in enumerate(_pert_genes)}
     adata.uns["perturb_gene_symbol_to_idx"] = _pert_gene_to_idx
     print(f"Perturbation gene index mapping: {len(_pert_gene_to_idx)} genes")
@@ -1197,6 +1205,10 @@ def main():
         time_encoder_dims=args.time_encoder_dims,
         cond_output_dropout=args.cond_output_dropout,
         layers_before_pool=layers_before_pool,
+        cross_attn_layers=args.cross_attn_layers,
+        gene_attn_dim=args.gene_attn_dim,
+        gene_self_attn_layers=args.gene_self_attn_layers,
+        cross_attn_heads=args.cross_attn_heads,
         optimizer=optax.MultiSteps(optax.chain(optax.clip_by_global_norm(args.gradient_clip_norm), optax.adam(args.learning_rate)), args.gradient_accumulation_steps),
         conditioning=args.conditioning,
         perturbation_gnn_kwargs=perturbation_gnn_kwargs,
@@ -1222,6 +1234,40 @@ def main():
         #     "condition_fused_mode": "adaptive",
         # },
     )
+    print("===== Hyperparameter Summary =====")
+    print(f"  solver: {args.solver}")
+    print(f"  seed: {args.seed}")
+    print(f"  num_iterations: {args.num_iterations}")
+    print(f"  batch_size: {args.batch_size}")
+    print(f"  learning_rate: {args.learning_rate}")
+    print(f"  gradient_accumulation_steps: {args.gradient_accumulation_steps}")
+    print(f"  match_every_n: {args.match_every_n}")
+    print(f"")
+    print(f"  conditioning: {args.conditioning}")
+    print(f"  hidden_dims: {args.hidden_dims}")
+    print(f"  decoder_dims: {args.decoder_dims}")
+    print(f"  time_encoder_dims: {args.time_encoder_dims}")
+    print(f"  condition_embedding_dim: {args.condition_embedding_dim}")
+    print(f"  cross_attn_layers: {args.cross_attn_layers}")
+    print(f"  gene_attn_dim: {args.gene_attn_dim}")
+    print(f"  gene_self_attn_layers: {args.gene_self_attn_layers}")
+    print(f"  cross_attn_heads: {args.cross_attn_heads}")
+    print(f"  cond_output_dropout: {args.cond_output_dropout}")
+    print(f"")
+    print(f"  endpoint_mse_weight: {args.endpoint_mse_weight}")
+    print(f"  condition_combined_loss_weight: {args.condition_combined_loss_weight}")
+    print(f"  condition_mean_delta_weight: {args.condition_mean_delta_weight}")
+    print(f"  cosine_loss_weight: {args.cosine_loss_weight}")
+    print(f"  high_delta_endpoint_weight: {args.high_delta_endpoint_weight}")
+    print(f"  high_delta_max_weight: {args.high_delta_max_weight}")
+    print(f"  terminal_loss_time_power: {args.terminal_loss_time_power}")
+    print(f"")
+    print(f"  pert_gnn_enabled: {args.pert_gnn_enabled}")
+    if args.pert_gnn_enabled:
+        print(f"  pert_gnn_hidden_dim: {args.pert_gnn_hidden_dim}")
+        print(f"  pert_gnn_num_layers: {args.pert_gnn_num_layers}")
+    print(f"  use_cell_type_condition: {args.use_cell_type_condition}")
+    print(f"===================================")
     print(f"Start training: iterations={args.num_iterations}, batch_size={args.batch_size}")
     # metrics_cb = Metrics(metrics=["r_squared", "mmd"])
     cf.train(
@@ -1323,7 +1369,7 @@ def main():
             all_obs.append(obs)
     print("Prediction finished")
     X = np.vstack(all_X)
-    X = np.clip(X, 0, None)
+    X = np.clip(X, 0, 10)  # cap at 10 (data max ~8.3) to guard against ODE blow-up
 
     obs = pd.concat(all_obs, ignore_index=True)
     adata_pred = ad.AnnData(X=X, obs=obs, var=test_adata.var.copy())

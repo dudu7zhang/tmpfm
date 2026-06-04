@@ -17,11 +17,11 @@ mkdir -p "$LOG_DIR"
 FLOW_PY="${FLOW_PY:-$HOME/miniconda3/envs/flow/bin/python}"
 CMP_PY="${CMP_PY:-$HOME/miniconda3/envs/cmp_methods/bin/python}"
 
-GPU_MYFLOW=${GPU_MYFLOW:-0}
+GPU_MYFLOW=${GPU_MYFLOW:-5}
 GPU_GEARS=${GPU_GEARS:-0}
 GPU_CELLFLOW=${GPU_CELLFLOW:-1}
 GPU_SCDFM=${GPU_SCDFM:-1}
-GPU_TXPERT=${GPU_TXPERT:-2}
+GPU_TXPERT=${GPU_TXPERT:-3}
 
 echo "=========================================="
 echo "Starting Replogle LOCO runs"
@@ -44,23 +44,34 @@ echo "  scDFM    -> GPU $GPU_SCDFM (cmp_methods)"
 echo "  TxPert   -> GPU $GPU_TXPERT (cmp_methods)"
 echo "=========================================="
 
+    # --endpoint-mse-weight 0.5 \
+    # --cosine-loss-weight 0.3 \
+
 CUDA_VISIBLE_DEVICES=$GPU_MYFLOW nohup "$FLOW_PY" "$REPO_DIR/scripts/train_myflow_loco_new.py" \
     --output-dir "$REPO_DIR/results/outputs/myflow_replogle_loco_$RUN_ID" \
     --run-name "myflow_replogle_loco_$RUN_ID" \
     --pert-gnn-enabled \
+    --pert-gnn-hidden-dim 16 \
     --seed 20240508 \
     --n-train-perts 28 \
     --n-test-perts 40 \
     --train-cell-fraction 1.0 \
     --test-cell-fraction 1.0 \
     --num-iterations 30000 \
-    --condition-combined-loss-weight 0.003 \
-    --endpoint-mse-weight 0.5 \
-    --cosine-loss-weight 0.3 \
-    --condition-embedding-dim 256 \
-    --cond-output-dropout 0.05 \
-    --gradient-accumulation-steps 2 \
+    --endpoint-mse-weight 1.0 \
+    --high-delta-endpoint-weight 0.0 \
+    --condition-embedding-dim 32 \
+    --condition-combined-loss-weight 0.0 \
+    --cosine-loss-weight 0.0 \
+    --batch-size 256 \
     --learning-rate 5e-4 \
+    --gradient-accumulation-steps 1 \
+    --match-every-n 20 \
+    --cond-output-dropout 0.0 \
+    --cross-attn-layers 1 \
+    --gene-attn-dim 16 \
+    --gene-self-attn-layers 0 \
+    --cross-attn-heads 4 \
     --predict-n-cells 64 \
     > "$LOG_DIR/myflow_loco.log" 2>&1 &
 echo "MyFlow PID: $!"

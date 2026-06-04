@@ -152,9 +152,9 @@ class ConditionalVelocityField(nn.Module):
         ]
 
         # ---- Condition → gene cross-attention (stackable) ----
-        self.cross_q_projs = [
-            nn.Dense(self.gene_attn_dim) for _ in range(self.cross_attn_layers)
-        ]
+        # Q = condition embedding (fixed across layers)
+        # KV = gene features (refined by each layer's attention output)
+        self.cross_q_proj = nn.Dense(self.gene_attn_dim)
         self.cross_attns = [
             nn.MultiHeadDotProductAttention(
                 num_heads=self.cross_attn_heads,
@@ -163,9 +163,7 @@ class ConditionalVelocityField(nn.Module):
             )
             for _ in range(self.cross_attn_layers)
         ]
-        self.cross_out_norms = [
-            nn.LayerNorm() for _ in range(self.cross_attn_layers)
-        ]
+        self.cross_out_norm = nn.LayerNorm()
 
         # ---- Project cross-attn output to hidden_dims[-1] ----
         self.fusion_proj = nn.Dense(self.hidden_dims[-1])
@@ -267,15 +265,15 @@ class ConditionalVelocityField(nn.Module):
             h_genes = h_genes + residual
 
         # ---- Condition → gene cross-attention: condition selects relevant genes ----
-        # z_c (now broadcast to cell batch) queries the gene feature sequence
-        h_cross = cond_embedding
+        # Q = condition embedding (fixed), KV = gene features (refined per layer)
+        z_q = self.cross_q_proj(cond_embedding)[:, None, :]       # (B, 1, gene_attn_dim)
         for i in range(self.cross_attn_layers):
-            z_q = self.cross_q_projs[i](h_cross)[:, None, :]       # (B, 1, gene_attn_dim)
-            h_cross = self.cross_attns[i](
+            h_attn = self.cross_attns[i](
                 inputs_q=z_q, inputs_kv=h_genes, deterministic=not train,
             )                                                       # (B, 1, gene_attn_dim)
-            h_cross = jnp.squeeze(h_cross, axis=1)                  # (B, gene_attn_dim)
-            h_cross = self.cross_out_norms[i](h_cross)
+            h_genes = h_genes + h_attn                              # broadcast residual: refine KV
+        h_cross = jnp.squeeze(h_attn, axis=1)                       # (B, gene_attn_dim)
+        h_cross = self.cross_out_norm(h_cross)
 
         # ---- Project to hidden_dims[-1] ----
         x_encoded = self.fusion_proj(h_cross)
