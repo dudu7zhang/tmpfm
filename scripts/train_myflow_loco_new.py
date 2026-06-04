@@ -720,6 +720,18 @@ def parse_args():
             "Set <=0 to match each condition's real test cell count."
         ),
     )
+    p.add_argument(
+        "--prediction-max-allowed",
+        type=float,
+        default=8.0,
+        help="Fail prediction if any raw generated expression exceeds this value.",
+    )
+    p.add_argument(
+        "--prediction-frac-gt-max-allowed",
+        type=float,
+        default=0.0,
+        help="Fail prediction if this fraction of raw generated values exceed --prediction-max-allowed.",
+    )
     p.add_argument("--skip-prediction", action="store_true")
     # p.add_argument("--valid-freq", type=int, default=500)
     p.add_argument("--output-dir", default="results/outputs/outputs")
@@ -1209,7 +1221,7 @@ def main():
         gene_attn_dim=args.gene_attn_dim,
         gene_self_attn_layers=args.gene_self_attn_layers,
         cross_attn_heads=args.cross_attn_heads,
-        optimizer=optax.MultiSteps(optax.chain(optax.clip_by_global_norm(args.gradient_clip_norm), optax.adam(args.learning_rate)), args.gradient_accumulation_steps),
+        optimizer=optax.MultiSteps(optax.chain(optax.clip_by_global_norm(args.gradient_clip_norm), optax.adamw(args.learning_rate, weight_decay=1e-5)), args.gradient_accumulation_steps),
         conditioning=args.conditioning,
         perturbation_gnn_kwargs=perturbation_gnn_kwargs,
         solver_kwargs={
@@ -1369,12 +1381,51 @@ def main():
             all_obs.append(obs)
     print("Prediction finished")
     X = np.vstack(all_X)
-    X = np.clip(X, 0, 10)  # cap at 10 (data max ~8.3) to guard against ODE blow-up
-
     obs = pd.concat(all_obs, ignore_index=True)
-    adata_pred = ad.AnnData(X=X, obs=obs, var=test_adata.var.copy())
     pred_dir = Path(args.output_dir) / f"predictions_{run_label}"
     pred_dir.mkdir(parents=True, exist_ok=True)
+
+    finite_mask = np.isfinite(X)
+    diagnostics = {
+        "shape": list(X.shape),
+        "min": float(np.nanmin(X)),
+        "max": float(np.nanmax(X)),
+        "mean": float(np.nanmean(X)),
+        "std": float(np.nanstd(X)),
+        "q50": float(np.nanpercentile(X, 50)),
+        "q75": float(np.nanpercentile(X, 75)),
+        "q95": float(np.nanpercentile(X, 95)),
+        "q99": float(np.nanpercentile(X, 99)),
+        "q999": float(np.nanpercentile(X, 99.9)),
+        "nan_count": int(np.isnan(X).sum()),
+        "inf_count": int(np.isinf(X).sum()),
+        "frac_gt_prediction_max_allowed": float(np.mean(X > args.prediction_max_allowed)),
+        "prediction_max_allowed": float(args.prediction_max_allowed),
+        "prediction_frac_gt_max_allowed": float(args.prediction_frac_gt_max_allowed),
+        "all_finite": bool(finite_mask.all()),
+    }
+    diag_file = pred_dir / f"prediction_diagnostics_{run_label}.json"
+    with open(diag_file, "w") as f:
+        json.dump(diagnostics, f, indent=2, sort_keys=True)
+    print(f"Prediction diagnostics: {diagnostics}")
+    print(f"Saved prediction diagnostics: {diag_file}")
+
+    prediction_failed = (
+        not finite_mask.all()
+        or diagnostics["max"] > args.prediction_max_allowed
+        or diagnostics["frac_gt_prediction_max_allowed"] > args.prediction_frac_gt_max_allowed
+    )
+    if prediction_failed:
+        raw_file = pred_dir / f"raw_unclipped_predictions_{run_label}.h5ad"
+        ad.AnnData(X=X, obs=obs, var=test_adata.var.copy()).write_h5ad(raw_file)
+        raise RuntimeError(
+            "Raw MyFlow prediction left the expected expression range; "
+            f"max={diagnostics['max']:.6g}, "
+            f"frac>{args.prediction_max_allowed:g}={diagnostics['frac_gt_prediction_max_allowed']:.6g}. "
+            f"Saved diagnostics to {diag_file} and raw predictions to {raw_file}."
+        )
+
+    adata_pred = ad.AnnData(X=X, obs=obs, var=test_adata.var.copy())
     out_file = pred_dir / f"predictions_{run_label}.h5ad"
     adata_pred.write_h5ad(out_file)
     print(f"Saved prediction file: {out_file}")

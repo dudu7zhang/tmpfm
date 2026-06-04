@@ -44,9 +44,6 @@ echo "  scDFM    -> GPU $GPU_SCDFM (cmp_methods)"
 echo "  TxPert   -> GPU $GPU_TXPERT (cmp_methods)"
 echo "=========================================="
 
-    # --endpoint-mse-weight 0.5 \
-    # --cosine-loss-weight 0.3 \
-
 CUDA_VISIBLE_DEVICES=$GPU_MYFLOW nohup "$FLOW_PY" "$REPO_DIR/scripts/train_myflow_loco_new.py" \
     --output-dir "$REPO_DIR/results/outputs/myflow_replogle_loco_$RUN_ID" \
     --run-name "myflow_replogle_loco_$RUN_ID" \
@@ -58,21 +55,23 @@ CUDA_VISIBLE_DEVICES=$GPU_MYFLOW nohup "$FLOW_PY" "$REPO_DIR/scripts/train_myflo
     --train-cell-fraction 1.0 \
     --test-cell-fraction 1.0 \
     --num-iterations 30000 \
-    --endpoint-mse-weight 1.0 \
+    --endpoint-mse-weight 0.5 \
     --high-delta-endpoint-weight 0.0 \
-    --condition-embedding-dim 32 \
-    --condition-combined-loss-weight 0.0 \
-    --cosine-loss-weight 0.0 \
+    --condition-embedding-dim 256 \
+    --condition-combined-loss-weight 0.003 \
+    --cosine-loss-weight 0.3 \
     --batch-size 256 \
     --learning-rate 5e-4 \
-    --gradient-accumulation-steps 1 \
+    --gradient-accumulation-steps 2 \
     --match-every-n 20 \
-    --cond-output-dropout 0.0 \
+    --cond-output-dropout 0.05 \
     --cross-attn-layers 1 \
     --gene-attn-dim 16 \
     --gene-self-attn-layers 0 \
     --cross-attn-heads 4 \
     --predict-n-cells 64 \
+    --prediction-max-allowed 8.0 \
+    --prediction-frac-gt-max-allowed 0.0 \
     > "$LOG_DIR/myflow_loco.log" 2>&1 &
 echo "MyFlow PID: $!"
 
