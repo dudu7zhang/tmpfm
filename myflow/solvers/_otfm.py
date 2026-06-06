@@ -118,6 +118,19 @@ class OTFlowMatching:
         self.high_delta_max_weight = float(kwargs.pop("high_delta_max_weight", 4.0))
         self.terminal_loss_time_power = float(kwargs.pop("terminal_loss_time_power", 2.0))
         self.high_delta_eps = float(kwargs.pop("high_delta_eps", 1e-6))
+        self.top_delta_loss_weight = float(kwargs.pop("top_delta_loss_weight", 0.0))
+        self.top_delta_endpoint_weight = float(kwargs.pop("top_delta_endpoint_weight", 0.0))
+        self.top_delta_fraction = float(kwargs.pop("top_delta_fraction", 0.05))
+        self.top_delta_min_genes = int(kwargs.pop("top_delta_min_genes", 20))
+
+        # SNR-weighted endpoint loss: per-gene signal-to-noise ratio weighting.
+        self.snr_endpoint_weight = float(kwargs.pop("snr_endpoint_weight", 0.0))
+
+        # Covariance-preserving loss: gene-gene covariance structure matching.
+        self.cov_loss_weight = float(kwargs.pop("cov_loss_weight", 0.0))
+
+        # Direct delta head loss (auxiliary branch)
+        self.delta_head_weight = float(kwargs.pop("delta_head_weight", 0.0))
 
         self.matrix = kwargs.pop("matrix", None)
         
@@ -154,7 +167,7 @@ class OTFlowMatching:
                 rng_flow, rng_encoder, rng_dropout, rng_graph_dropout = jax.random.split(rng, 4)
                 x_t = self.probability_path.compute_xt(rng_flow, t, source, target)
                 u_t = self.probability_path.compute_ut(t, x_t, source, target)
-                v_t, mean_cond, logvar_cond = vf_state.apply_fn(
+                v_t, mean_cond, logvar_cond, delta_pred = vf_state.apply_fn(
                     {"params": params},
                     t,
                     x_t,
@@ -184,6 +197,26 @@ class OTFlowMatching:
                     weights = 1.0 + self.high_delta_endpoint_weight * weights
                     return jnp.minimum(weights, self.high_delta_max_weight)
 
+                def _top_delta_mask(true_delta_abs: jnp.ndarray) -> jnp.ndarray:
+                    n_genes = true_delta_abs.shape[-1]
+                    k = max(self.top_delta_min_genes, int(round(n_genes * self.top_delta_fraction)))
+                    k = min(max(k, 1), n_genes)
+                    threshold = jnp.sort(true_delta_abs, axis=-1)[..., -k]
+                    if true_delta_abs.ndim == 2:
+                        threshold = threshold[..., None]
+                    return (true_delta_abs >= threshold).astype(true_delta_abs.dtype)
+
+                def _apply_delta_gene_weights(
+                    sq_err: jnp.ndarray,
+                    true_delta_abs: jnp.ndarray,
+                ) -> jnp.ndarray:
+                    if self.high_delta_endpoint_weight > 0:
+                        sq_err = sq_err * _high_delta_weights(true_delta_abs)
+                    if self.top_delta_endpoint_weight > 0:
+                        top_mask = _top_delta_mask(true_delta_abs)
+                        sq_err = sq_err * (1.0 + self.top_delta_endpoint_weight * top_mask)
+                    return sq_err
+
                 # Optional: JAX combined Sinkhorn + Energy regularizer.
                 if self.condition_combined_loss_weight > 0:
                     # Stop gradients for t < 0.5 to prevent noisy extrapolations at early stages
@@ -206,13 +239,65 @@ class OTFlowMatching:
                 if self.endpoint_mse_weight > 0:
                     x1_pred = x_t + (1.0 - t_col) * v_t
                     endpoint_sq_err = (x1_pred - target) ** 2
-                    if self.high_delta_endpoint_weight > 0:
+                    if self.high_delta_endpoint_weight > 0 or self.top_delta_endpoint_weight > 0:
                         true_delta_abs = jnp.abs(_condition_mean(target - source))
-                        gene_weights = _high_delta_weights(true_delta_abs)
-                        endpoint_sq_err = endpoint_sq_err * gene_weights
+                        endpoint_sq_err = _apply_delta_gene_weights(endpoint_sq_err, true_delta_abs)
                     endpoint_sq_err = endpoint_sq_err * terminal_gate
                     endpoint_loss = jnp.mean(endpoint_sq_err)
                     flow_matching_loss = flow_matching_loss + self.endpoint_mse_weight * endpoint_loss
+
+                # SNR-weighted endpoint MSE: weights genes by per-condition signal-to-noise ratio.
+                # SNR = |mean_delta| / std_delta — genes with large, consistent perturbation
+                # effects get higher weight, noisy/unaffected genes get lower weight.
+                if self.snr_endpoint_weight > 0:
+                    x1_pred_snr = x_t + (1.0 - t_col) * v_t
+                    delta = target - source
+                    mean_delta = _condition_mean(delta)
+                    centered_delta = delta - mean_delta
+                    var_delta = _condition_mean(centered_delta ** 2)
+                    std_delta = jnp.sqrt(var_delta + 1e-8)
+                    # Per-gene effect size (Cohen's d-like).
+                    gene_snr = jnp.abs(mean_delta) / (std_delta + 1e-8)
+                    # Normalize to mean ~1 to preserve loss scale.
+                    axis = -1 if gene_snr.ndim == 2 else 0
+                    keepdims = gene_snr.ndim == 2
+                    snr_scale = jnp.mean(gene_snr, axis=axis, keepdims=keepdims) + 1e-8
+                    snr_weights = gene_snr / snr_scale
+                    snr_weights = jnp.minimum(snr_weights, self.high_delta_max_weight)
+                    if self.top_delta_endpoint_weight > 0:
+                        snr_weights = snr_weights * (1.0 + self.top_delta_endpoint_weight * _top_delta_mask(jnp.abs(mean_delta)))
+                    snr_sq_err = (x1_pred_snr - target) ** 2 * snr_weights * terminal_gate
+                    snr_endpoint_loss = jnp.mean(snr_sq_err)
+                    flow_matching_loss = flow_matching_loss + self.snr_endpoint_weight * snr_endpoint_loss
+
+                # Covariance-preserving loss: penalizes differences in gene-gene covariance
+                # structure between predicted and true endpoints. Perturbations affect
+                # co-regulated gene programs, not just individual genes.
+                if self.cov_loss_weight > 0:
+                    x1_pred_cov = x_t + (1.0 - t_col) * v_t
+                    n_genes = x1_pred_cov.shape[-1]
+
+                    def _condition_cov(values):
+                        cond_mean = _condition_mean(values)
+                        centered = values - cond_mean
+                        # Outer product per cell: (B, G, G), then aggregate per condition.
+                        outer = centered[:, :, None] * centered[:, None, :]
+                        g = values.shape[-1]
+                        return _condition_mean(outer.reshape(outer.shape[0], -1)).reshape(-1, g, g)
+
+                    cov_pred = _condition_cov(x1_pred_cov)
+                    cov_true = _condition_cov(target)
+                    cov_err = (cov_pred - cov_true) ** 2
+                    cov_loss = jnp.mean(cov_err)
+                    cov_loss = cov_loss * jnp.mean(terminal_gate)
+                    flow_matching_loss = flow_matching_loss + self.cov_loss_weight * cov_loss
+
+                # Direct delta head loss: auxiliary branch predicting per-gene delta from condition.
+                if self.delta_head_weight > 0 and delta_pred is not None:
+                    target_delta = target - source
+                    delta_sq_err = (delta_pred - target_delta) ** 2
+                    delta_head_loss = jnp.mean(delta_sq_err)
+                    flow_matching_loss = flow_matching_loss + self.delta_head_weight * delta_head_loss
 
                 # Condition-level mean supervision in delta space.
                 if self.condition_mean_delta_weight > 0:
@@ -220,16 +305,30 @@ class OTFlowMatching:
                     mean_delta_pred = _condition_mean(x1_pred_cm - source)
                     mean_delta_true = _condition_mean(target - source)
                     mean_delta_sq_err = (mean_delta_pred - mean_delta_true) ** 2
-                    if self.high_delta_endpoint_weight > 0:
+                    if self.high_delta_endpoint_weight > 0 or self.top_delta_endpoint_weight > 0:
                         true_delta_abs = jnp.abs(mean_delta_true)
-                        gene_weights = _high_delta_weights(true_delta_abs)
-                        mean_delta_sq_err = mean_delta_sq_err * gene_weights
+                        mean_delta_sq_err = _apply_delta_gene_weights(mean_delta_sq_err, true_delta_abs)
                     if mean_delta_sq_err.ndim == 2:
                         mean_delta_sq_err = mean_delta_sq_err * terminal_gate
                     else:
                         mean_delta_sq_err = mean_delta_sq_err * jnp.mean(terminal_gate)
                     condition_mean_delta_loss = jnp.mean(mean_delta_sq_err)
                     flow_matching_loss = flow_matching_loss + self.condition_mean_delta_weight * condition_mean_delta_loss
+
+                # Extra condition-mean delta loss restricted to the largest true-response genes.
+                if self.top_delta_loss_weight > 0:
+                    x1_pred_td = x_t + (1.0 - t_col) * v_t
+                    mean_delta_pred = _condition_mean(x1_pred_td - source)
+                    mean_delta_true = _condition_mean(target - source)
+                    top_mask = _top_delta_mask(jnp.abs(mean_delta_true))
+                    top_delta_sq_err = (mean_delta_pred - mean_delta_true) ** 2 * top_mask
+                    if top_delta_sq_err.ndim == 2:
+                        top_delta_sq_err = top_delta_sq_err * terminal_gate
+                    else:
+                        top_delta_sq_err = top_delta_sq_err * jnp.mean(terminal_gate)
+                    denom = jnp.sum(top_mask) + self.high_delta_eps
+                    top_delta_loss = jnp.sum(top_delta_sq_err) / denom
+                    flow_matching_loss = flow_matching_loss + self.top_delta_loss_weight * top_delta_loss
 
                 # Cosine similarity loss on delta (directional accuracy).
                 if self.cosine_loss_weight > 0:

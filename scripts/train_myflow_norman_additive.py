@@ -276,13 +276,21 @@ def parse_args():
     p.add_argument("--condition-mean-delta-weight", type=float, default=0.0, help="Weight for condition-level mean delta supervision.")
     p.add_argument("--high-delta-endpoint-weight", type=float, default=0.0, help="Extra endpoint/mean-loss weight on genes with large true condition delta.")
     p.add_argument("--high-delta-max-weight", type=float, default=4.0, help="Maximum per-gene multiplier used by high-delta endpoint/mean losses.")
+    p.add_argument("--top-delta-loss-weight", type=float, default=0.0, help="Extra condition-mean delta loss on top true-response genes. Default 0 disables.")
+    p.add_argument("--top-delta-endpoint-weight", type=float, default=0.0, help="Extra per-gene multiplier for endpoint/mean losses on top true-response genes. Default 0 disables.")
+    p.add_argument("--top-delta-fraction", type=float, default=0.05, help="Fraction of genes treated as top-delta genes for top-delta losses.")
+    p.add_argument("--top-delta-min-genes", type=int, default=20, help="Minimum number of top-delta genes per condition.")
     p.add_argument("--terminal-loss-time-power", type=float, default=2.0, help="Power for terminal-loss time gate t^p; larger values focus endpoint-style losses closer to t=1.")
     p.add_argument("--cosine-loss-weight", type=float, default=0.0, help="Weight for cosine similarity loss on delta direction.")
+    p.add_argument("--flow-noise", type=float, default=0.0, help="Gaussian noise std in flow matching path.")
+    p.add_argument("--snr-endpoint-weight", type=float, default=0.0, help="Weight for SNR-weighted endpoint MSE (per-gene signal-to-noise ratio, higher weight on DEGs). Default 0 disables.")
+    p.add_argument("--cov-loss-weight", type=float, default=0.0, help="Weight for covariance-preserving loss (gene-gene covariance structure matching). Default 0 disables.")
     #1e-3
     p.add_argument("--learning-rate", type=float, default=5e-4, help="Base learning rate for Adam optimizer.")
     p.add_argument("--hidden-dims", type=int, nargs="+", default=[512, 512, 512])
     p.add_argument("--decoder-dims", type=int, nargs="+", default=[1024, 1024, 1024])
     p.add_argument("--time-encoder-dims", type=int, nargs="+", default=[512, 512, 512])
+    p.add_argument("--condition-embedding-dim", type=int, default=256, help="Dimension of condition embedding.")
     p.add_argument("--cross-attn-layers", type=int, default=1, help="Number of cross-attention layers (default: 1).")
     p.add_argument("--gene-attn-dim", type=int, default=16, help="Dimension of gene attention embeddings (default: 16).")
     p.add_argument("--gene-self-attn-layers", type=int, default=0, help="Number of gene self-attention layers (default: 0).")
@@ -297,6 +305,11 @@ def parse_args():
     p.add_argument("--pert-gnn-enabled", action="store_true", help="Enable perturbation-side GNN prior.")
     p.add_argument("--pert-gnn-hidden-dim", type=int, default=16)
     p.add_argument("--pert-gnn-num-layers", type=int, default=2)
+    p.add_argument("--pert-gnn-num-heads", type=int, default=4, help="Number of attention heads for enhanced GNN.")
+    p.add_argument("--enhanced-pert-gnn", action="store_true", help="Use EnhancedPerturbationGNN (multi-head attention + virtual node).")
+    p.add_argument("--delta-head-enabled", action="store_true", help="Enable direct delta prediction head (condition → per-gene delta).")
+    p.add_argument("--delta-head-hidden", type=int, default=256, help="Hidden dim of the delta head MLP.")
+    p.add_argument("--delta-head-weight", type=float, default=0.0, help="Weight for delta head MSE loss. Default 0 disables.")
     p.add_argument(
         "--pert-gnn-go-file",
         default=str(ROOT / "comparison_methods" / "TxPert-main" / "data" / "graphs" / "go" / "go_top_50.csv"),
@@ -464,6 +477,10 @@ def main():
             "edge_src": _gnn_src,
             "edge_tgt": _gnn_tgt,
             "edge_w": _gnn_w,
+            "enhanced_gnn": args.enhanced_pert_gnn,
+            "gnn_hidden_dim": args.pert_gnn_hidden_dim,
+            "gnn_num_layers": args.pert_gnn_num_layers,
+            "gnn_num_heads": args.pert_gnn_num_heads,
         }
         print(f"Perturbation GNN graph: {len(_pert_gene_to_idx)} nodes, {_gnn_src.shape[0]} edges")
     elif args.pert_gnn_enabled:
@@ -609,6 +626,7 @@ def main():
     print("Preparing model (default architecture). This may take a few seconds")
     cf.prepare_model(
         seed=args.seed,
+        condition_embedding_dim=args.condition_embedding_dim,
         hidden_dims=args.hidden_dims,
         decoder_dims=args.decoder_dims,
         time_encoder_dims=args.time_encoder_dims,
@@ -618,7 +636,10 @@ def main():
         cross_attn_heads=args.cross_attn_heads,
         optimizer=optax.MultiSteps(optax.adam(args.learning_rate), args.gradient_accumulation_steps),
         conditioning=args.conditioning,
+        probability_path={"constant_noise": args.flow_noise},
         perturbation_gnn_kwargs=perturbation_gnn_kwargs,
+        delta_head_enabled=args.delta_head_enabled,
+        delta_head_hidden=args.delta_head_hidden,
         solver_kwargs={
             "condition_combined_loss_weight": args.condition_combined_loss_weight,
             "match_every_n": args.match_every_n,
@@ -626,8 +647,15 @@ def main():
             "condition_mean_delta_weight": args.condition_mean_delta_weight,
             "high_delta_endpoint_weight": args.high_delta_endpoint_weight,
             "high_delta_max_weight": args.high_delta_max_weight,
+            "top_delta_loss_weight": args.top_delta_loss_weight,
+            "top_delta_endpoint_weight": args.top_delta_endpoint_weight,
+            "top_delta_fraction": args.top_delta_fraction,
+            "top_delta_min_genes": args.top_delta_min_genes,
             "terminal_loss_time_power": args.terminal_loss_time_power,
             "cosine_loss_weight": args.cosine_loss_weight,
+            "delta_head_weight": args.delta_head_weight,
+            "snr_endpoint_weight": args.snr_endpoint_weight,
+            "cov_loss_weight": args.cov_loss_weight,
         },
     )
     print("===== Hyperparameter Summary =====")
@@ -653,7 +681,7 @@ def main():
     print(f"  gene_attn_dim: {args.gene_attn_dim}")
     print(f"  gene_self_attn_layers: {args.gene_self_attn_layers}")
     print(f"  cross_attn_heads: {args.cross_attn_heads}")
-    print(f"  condition_embedding_dim: 256 (default)")
+    print(f"  condition_embedding_dim: {args.condition_embedding_dim}")
     print(f"  cond_output_dropout: 0.9 (default)")
     print(f"  condition_mode: deterministic (default)")
     print(f"  pooling: attention_token (default)")
@@ -666,12 +694,21 @@ def main():
     print(f"  cosine_loss_weight: {args.cosine_loss_weight}")
     print(f"  high_delta_endpoint_weight: {args.high_delta_endpoint_weight}")
     print(f"  high_delta_max_weight: {args.high_delta_max_weight}")
+    print(f"  top_delta_loss_weight: {args.top_delta_loss_weight}")
+    print(f"  top_delta_endpoint_weight: {args.top_delta_endpoint_weight}")
+    print(f"  top_delta_fraction: {args.top_delta_fraction}")
+    print(f"  top_delta_min_genes: {args.top_delta_min_genes}")
+    print(f"  snr_endpoint_weight: {args.snr_endpoint_weight}")
+    print(f"  cov_loss_weight: {args.cov_loss_weight}")
     print(f"  terminal_loss_time_power: {args.terminal_loss_time_power}")
     print(f"")
     print(f"  pert_gnn_enabled: {args.pert_gnn_enabled}")
     if args.pert_gnn_enabled:
         print(f"  pert_gnn_hidden_dim: {args.pert_gnn_hidden_dim}")
         print(f"  pert_gnn_num_layers: {args.pert_gnn_num_layers}")
+        print(f"  enhanced_pert_gnn: {args.enhanced_pert_gnn}")
+        if args.enhanced_pert_gnn:
+            print(f"  pert_gnn_num_heads: {args.pert_gnn_num_heads}")
     print(f"  use_cell_type_condition: {args.use_cell_type_condition}")
     print(f"===================================")
     print(f"Start training: iterations={args.num_iterations}, batch_size={args.batch_size}")
@@ -754,6 +791,7 @@ def main():
     if not all_X:
         raise RuntimeError("No predictions were generated.")
     X = np.vstack(all_X)
+    X = np.clip(X, 0, None)  # clamp negative predicted expression to 0
     obs = pd.concat(all_obs, ignore_index=True)
     adata_pred = ad.AnnData(X=X, obs=obs, var=adata.var.copy())
     out_file = out_dir / f"predictions_{run_label}.h5ad"

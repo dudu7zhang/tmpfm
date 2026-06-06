@@ -1227,3 +1227,144 @@ class PerturbationGNN(nn.Module):
         return enriched
 
 
+class EnhancedPerturbationGNN(nn.Module):
+    """Multi-head graph attention with virtual node for perturbation genes.
+
+    Key improvements over PerturbationGNN:
+    - Multi-head GATv2 attention instead of fixed-weight message passing
+    - Virtual node for global information exchange (no random expander needed)
+    - 4 pre-norm residual layers with FFN
+    - Edge weights used as attention bias
+
+    Inspired by Exphormer but replaces the expander graph with a learned
+    virtual node that provides principled global communication.
+    """
+
+    hidden_dim: int = 128
+    num_layers: int = 4
+    num_heads: int = 4
+    dropout: float = 0.1
+
+    # Graph edges (fixed, same format as PerturbationGNN)
+    edge_src: jnp.ndarray | None = None
+    edge_tgt: jnp.ndarray | None = None
+    edge_w: jnp.ndarray | None = None
+
+    @nn.compact
+    def __call__(self, pert_indices: jnp.ndarray, pert_embeddings: jnp.ndarray,
+                 deterministic: bool = True) -> jnp.ndarray:
+        has_graph = (
+            self.edge_src is not None
+            and self.edge_tgt is not None
+            and self.edge_src.shape[0] > 0
+        )
+
+        batch, n_genes, _ = pert_indices.shape
+        pert_indices = pert_indices.astype(jnp.int32)
+        n_nodes = pert_embeddings.shape[0]
+        head_dim = self.hidden_dim // self.num_heads
+
+        if not has_graph:
+            safe_idx = jnp.clip(pert_indices, 0, n_nodes - 1).reshape(-1)
+            gathered = jnp.take(pert_embeddings, safe_idx, axis=0)
+            gathered = gathered.reshape(batch, n_genes, self.hidden_dim)
+            valid = (pert_indices >= 0).astype(gathered.dtype).reshape(batch, n_genes, 1)
+            return nn.Dense(self.hidden_dim)(nn.silu(gathered)) * valid
+
+        # Project initial embeddings to hidden_dim
+        node_feats = nn.Dense(self.hidden_dim)(pert_embeddings)  # (N, hidden_dim)
+
+        # Virtual node for global communication
+        vn = self.param(
+            "virtual_node",
+            nn.initializers.normal(0.02),
+            (1, self.hidden_dim),
+        )
+
+        e_src = self.edge_src
+        e_tgt = self.edge_tgt
+        e_w = self.edge_w
+
+        for layer_idx in range(self.num_layers):
+            # ---- Multi-head GATv2 attention ----
+            q = nn.Dense(self.hidden_dim)(node_feats)  # (N, hidden_dim)
+            k = nn.Dense(self.hidden_dim)(node_feats)
+            v = nn.Dense(self.hidden_dim)(node_feats)
+
+            q = q.reshape(-1, self.num_heads, head_dim)  # (N, H, D)
+            k = k.reshape(-1, self.num_heads, head_dim)
+            v = v.reshape(-1, self.num_heads, head_dim)
+
+            # GATv2: attention = LeakyReLU(q_src + k_tgt) with edge weight bias
+            q_src = q[e_src]   # (E, H, D)
+            k_tgt = k[e_tgt]   # (E, H, D)
+            attn_raw = q_src + k_tgt  # (E, H, D)
+            attn_raw = nn.leaky_relu(attn_raw, negative_slope=0.2)
+
+            # Edge weight as bias (log space for stability)
+            log_edge_w = jnp.log(e_w[:, None, None] + 1e-8)  # (E, 1, 1)
+            attn_raw = attn_raw + log_edge_w
+
+            # Scatter softmax per target node per head
+            attn_max = jnp.zeros((n_nodes, self.num_heads, 1)).at[e_tgt].max(attn_raw)
+            attn_exp = jnp.exp(attn_raw - attn_max[e_tgt])
+            attn_sum = jnp.zeros((n_nodes, self.num_heads, 1)).at[e_tgt].add(attn_exp)
+            alpha = attn_exp / (attn_sum[e_tgt] + 1e-8)  # (E, H, 1)
+
+            # Aggregate
+            v_src = v[e_src]  # (E, H, D)
+            msg = v_src * alpha  # (E, H, D)
+            gat_out = jnp.zeros_like(v).at[e_tgt].add(msg)  # (N, H, D)
+            gat_out = gat_out.reshape(n_nodes, self.hidden_dim)  # (N, hidden_dim)
+            gat_out = nn.Dropout(self.dropout)(gat_out, deterministic=deterministic)
+
+            # ---- Virtual node attention ----
+            # Virtual node attends to all real nodes
+            vn_q = nn.Dense(self.hidden_dim)(vn)  # (1, hidden_dim)
+            vn_q = vn_q.reshape(1, self.num_heads, head_dim)
+            # Keys and values from all real nodes
+            k_vn = k  # reuse k from GAT
+            v_vn = v  # reuse v from GAT
+
+            # Attention: vn_q · k_vn^T
+            attn_vn = jnp.sum(vn_q * k_vn, axis=-1) / jnp.sqrt(head_dim)  # (1, H, N) after sum over D
+            # Actually let me compute this properly
+            # vn_q: (1, H, D), k_vn: (N, H, D)
+            # We want: sum over D of vn_q * k_vn for each pair
+            attn_vn = jnp.einsum('ihd,nhd->ihn', vn_q, k_vn) / jnp.sqrt(head_dim)  # (1, H, N)
+            attn_vn = jax.nn.softmax(attn_vn, axis=-1)  # (1, H, N)
+            vn_update = jnp.einsum('ihn,nhd->ihd', attn_vn, v_vn)  # (1, H, D)
+            vn_update = vn_update.reshape(1, self.hidden_dim)
+            vn = vn + nn.Dropout(self.dropout)(vn_update, deterministic=deterministic)
+
+            # Real nodes attend to virtual node
+            # q from real nodes, k/v from virtual node
+            vn_k = nn.Dense(self.hidden_dim)(vn).reshape(1, self.num_heads, head_dim)
+            vn_v = nn.Dense(self.hidden_dim)(vn).reshape(1, self.num_heads, head_dim)
+            attn_g = jnp.einsum('nhd,1hd->n', q, vn_k) / jnp.sqrt(head_dim)  # (N,)
+            gate = nn.sigmoid(attn_g)[:, None]  # (N, 1)
+            global_info = vn_v.reshape(1, self.hidden_dim)  # (1, hidden_dim)
+
+            # ---- Combine GAT + Global + Residual + FFN ----
+            gat_out = gat_out + gate * global_info  # GAT + gated global
+            h = nn.LayerNorm()(node_feats + gat_out)  # Pre-norm residual
+            # FFN
+            ffn = nn.Dense(self.hidden_dim * 2)(h)
+            ffn = nn.gelu(ffn)
+            ffn = nn.Dropout(self.dropout)(ffn, deterministic=deterministic)
+            ffn = nn.Dense(self.hidden_dim)(ffn)
+            ffn = nn.Dropout(self.dropout)(ffn, deterministic=deterministic)
+            node_feats = nn.LayerNorm()(h + ffn)
+
+        # Final projection
+        node_feats = nn.Dense(self.hidden_dim)(nn.silu(node_feats))
+
+        # Gather per-token enriched embeddings
+        safe_idx = jnp.clip(pert_indices, 0, n_nodes - 1).reshape(-1)
+        gathered = jnp.take(node_feats, safe_idx, axis=0)
+        gathered = gathered.reshape(batch, n_genes, self.hidden_dim)
+        valid = (pert_indices >= 0).astype(gathered.dtype).reshape(batch, n_genes, 1)
+
+        return gathered * valid
+
+

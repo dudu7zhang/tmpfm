@@ -272,6 +272,9 @@ class MyFlow:
         vf_act_fn: Callable[[jnp.ndarray], jnp.ndarray] = nn.silu,
         vf_kwargs: dict[str, Any] | None = None,
         perturbation_gnn_kwargs: dict[str, Any] | None = None,
+        delta_head_enabled: bool = False,
+        delta_head_hidden: int = 256,
+        gene_mask_enabled: bool = True,
         # GRN / sparsity options
         grn_path: str | None = None,
         use_nonlinear_path: bool = False,
@@ -485,6 +488,9 @@ class MyFlow:
             layer_norm_before_concatenation=layer_norm_before_concatenation,
             linear_projection_before_concatenation=linear_projection_before_concatenation,
             perturbation_gnn_kwargs=perturbation_gnn_kwargs or {},
+            delta_head_enabled=delta_head_enabled,
+            delta_head_hidden=delta_head_hidden,
+            gene_mask_enabled=gene_mask_enabled,
             **vf_kwargs,
         )
         # Bypass Flax field system: directly inject GNN config
@@ -494,6 +500,10 @@ class MyFlow:
             'edge_tgt': (perturbation_gnn_kwargs or {}).get('edge_tgt'),
             'edge_w': (perturbation_gnn_kwargs or {}).get('edge_w'),
             'pert_gene_to_idx': (perturbation_gnn_kwargs or {}).get('pert_gene_to_idx', {}),
+            'enhanced_gnn': bool((perturbation_gnn_kwargs or {}).get('enhanced_gnn', False)),
+            'gnn_hidden_dim': int((perturbation_gnn_kwargs or {}).get('gnn_hidden_dim', 16)),
+            'gnn_num_layers': int((perturbation_gnn_kwargs or {}).get('gnn_num_layers', 2)),
+            'gnn_num_heads': int((perturbation_gnn_kwargs or {}).get('gnn_num_heads', 4)),
         })
 
         probability_path, noise = next(iter(probability_path.items()))

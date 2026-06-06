@@ -55,13 +55,22 @@ def cal_delta_metric(ctrl_mean, real_mean, pred_mean, top_k=20, ds_top_k=None, s
     delta_pred = pred_mean - ctrl_mean
     pearson_delta, _ = scipy.stats.pearsonr(delta_real, delta_pred)
 
+    # Fold-change (relative delta): δ / ctrl
+    fc_real = delta_real / (ctrl_mean + 1e-8)
+    fc_pred = delta_pred / (ctrl_mean + 1e-8)
+    pearson_delta_hat, _ = scipy.stats.pearsonr(fc_real, fc_pred)
+
     top_n_idx = np.argsort(np.abs(delta_real))[-top_k:]
     if len(top_n_idx) > 1:
         pearson_delta_top_k, _ = scipy.stats.pearsonr(
             delta_real[top_n_idx], delta_pred[top_n_idx]
         )
+        pearson_delta_hat_top_k, _ = scipy.stats.pearsonr(
+            fc_real[top_n_idx], fc_pred[top_n_idx]
+        )
     else:
         pearson_delta_top_k = 0.0
+        pearson_delta_hat_top_k = 0.0
 
     # DS is all-gene sign agreement by default.  A positive ds_top_k is kept
     # only for backward-compatible ad-hoc analyses.
@@ -72,7 +81,7 @@ def cal_delta_metric(ctrl_mean, real_mean, pred_mean, top_k=20, ds_top_k=None, s
     sign_real = np.where(np.abs(delta_real[ds_idx]) > sign_eps, np.sign(delta_real[ds_idx]), 0)
     sign_pred = np.where(np.abs(delta_pred[ds_idx]) > sign_eps, np.sign(delta_pred[ds_idx]), 0)
     ds_score = np.mean([1 if r == p else 0 for r, p in zip(sign_real, sign_pred)])
-    return pearson_delta, pearson_delta_top_k, ds_score
+    return pearson_delta, pearson_delta_top_k, ds_score, pearson_delta_hat, pearson_delta_hat_top_k
 
 
 def get_deg_sets(adata, group="target"):
@@ -188,7 +197,7 @@ def compute_des_per_condition(ctrl_adata, real_adata, pred_adata,
             ctrl_mean = np.array(ctrl_aligned.X.mean(axis=0)).flatten()
             real_mean = np.array(real_aligned.X.mean(axis=0)).flatten()
             pred_mean = np.array(pred_aligned.X.mean(axis=0)).flatten()
-            c_pearson, c_pearson_top20, c_ds = cal_delta_metric(ctrl_mean, real_mean, pred_mean, top_k=20)
+            c_pearson, c_pearson_top20, c_ds, c_pearson_dh, c_pearson_dh20 = cal_delta_metric(ctrl_mean, real_mean, pred_mean, top_k=20)
             c_l2 = np.linalg.norm(real_mean - pred_mean)
             des_results.append({
                 "condition": str(cond),
@@ -196,7 +205,9 @@ def compute_des_per_condition(ctrl_adata, real_adata, pred_adata,
                 "des_accuracy": float(d_acc),
                 "de_spearman": float(d_spearman) if not np.isnan(d_spearman) else None,
                 "condition_pearson_delta": float(c_pearson) if not np.isnan(c_pearson) else None,
+                "condition_pearson_delta_hat": float(c_pearson_dh) if not np.isnan(c_pearson_dh) else None,
                 "condition_pearson_delta_top20": float(c_pearson_top20) if not np.isnan(c_pearson_top20) else None,
+                "condition_pearson_delta_hat_top20": float(c_pearson_dh20) if not np.isnan(c_pearson_dh20) else None,
                 "condition_direction_sign_score": float(c_ds),
                 "condition_l2": float(c_l2),
             })
@@ -213,10 +224,12 @@ def compute_des_per_condition(ctrl_adata, real_adata, pred_adata,
     spearman_valid = des_df["de_spearman"].dropna()
     spearman_avg = float(spearman_valid.mean()) if len(spearman_valid) > 0 else float("nan")
     condition_delta_avg = float(des_df["condition_pearson_delta"].dropna().mean())
+    condition_delta_hat_avg = float(des_df["condition_pearson_delta_hat"].dropna().mean()) if "condition_pearson_delta_hat" in des_df else float("nan")
     condition_delta_top20_avg = float(des_df["condition_pearson_delta_top20"].dropna().mean())
     condition_l2_avg = float(des_df["condition_l2"].mean())
     for row in des_results:
         row.setdefault("_summary_condition_pearson_delta_avg", condition_delta_avg)
+        row.setdefault("_summary_condition_pearson_delta_hat_avg", condition_delta_hat_avg)
         row.setdefault("_summary_condition_pearson_delta_top20_avg", condition_delta_top20_avg)
         row.setdefault("_summary_condition_l2_avg", condition_l2_avg)
     return recall_avg, acc_avg, spearman_avg, des_results
@@ -284,10 +297,10 @@ def compute_deg_metrics_per_condition(ctrl_adata, real_adata, pred_adata,
             deg_metrics = cal_deg_metrics(ctrl_mean, real_mean, pred_mean, deg_idx)
             deg_overlap = cal_deg_overlap_metrics(ctrl_mean, real_mean, pred_mean)
             # Per-condition delta metrics (Pearson Δ, Δ20, Δ50, Δ100, Δ1000, DS)
-            cond_pearson_d, cond_pearson_d20, cond_ds = cal_delta_metric(ctrl_mean, real_mean, pred_mean, top_k=20)
-            _, cond_pearson_d50, _ = cal_delta_metric(ctrl_mean, real_mean, pred_mean, top_k=50)
-            _, cond_pearson_d100, _ = cal_delta_metric(ctrl_mean, real_mean, pred_mean, top_k=100)
-            _, cond_pearson_d1000, _ = cal_delta_metric(ctrl_mean, real_mean, pred_mean, top_k=1000)
+            cond_pearson_d, cond_pearson_d20, cond_ds, cond_pearson_dh, cond_pearson_dh20 = cal_delta_metric(ctrl_mean, real_mean, pred_mean, top_k=20)
+            _, cond_pearson_d50, _, _, cond_pearson_dh50 = cal_delta_metric(ctrl_mean, real_mean, pred_mean, top_k=50)
+            _, cond_pearson_d100, _, _, cond_pearson_dh100 = cal_delta_metric(ctrl_mean, real_mean, pred_mean, top_k=100)
+            _, cond_pearson_d1000, _, _, cond_pearson_dh1000 = cal_delta_metric(ctrl_mean, real_mean, pred_mean, top_k=1000)
             n_degs = len(deg_idx)
 
             # DE Spearman: rank correlation of logFC on real DE genes
@@ -342,10 +355,15 @@ def compute_deg_metrics_per_condition(ctrl_adata, real_adata, pred_adata,
                 "de_spearman": de_spearman,
                 "condition_ds": float(cond_ds),
                 "condition_pearson_delta": float(cond_pearson_d) if not np.isnan(cond_pearson_d) else 0.0,
+                "condition_pearson_delta_hat": float(cond_pearson_dh) if not np.isnan(cond_pearson_dh) else 0.0,
                 "condition_pearson_delta_top20": float(cond_pearson_d20) if not np.isnan(cond_pearson_d20) else 0.0,
+                "condition_pearson_delta_hat_top20": float(cond_pearson_dh20) if not np.isnan(cond_pearson_dh20) else 0.0,
                 "condition_pearson_delta_top50": float(cond_pearson_d50) if not np.isnan(cond_pearson_d50) else 0.0,
+                "condition_pearson_delta_hat_top50": float(cond_pearson_dh50) if not np.isnan(cond_pearson_dh50) else 0.0,
                 "condition_pearson_delta_top100": float(cond_pearson_d100) if not np.isnan(cond_pearson_d100) else 0.0,
+                "condition_pearson_delta_hat_top100": float(cond_pearson_dh100) if not np.isnan(cond_pearson_dh100) else 0.0,
                 "condition_pearson_delta_top1000": float(cond_pearson_d1000) if not np.isnan(cond_pearson_d1000) else 0.0,
+                "condition_pearson_delta_hat_top1000": float(cond_pearson_dh1000) if not np.isnan(cond_pearson_dh1000) else 0.0,
             })
         except Exception:
             continue
@@ -395,17 +413,26 @@ def evaluate_predictions(ctrl_adata, real_adata, pred_adata, output_prefix="",
             avg_de_spearman = float(spearman_valid.mean()) if len(spearman_valid) > 0 else float("nan")
             avg_condition_ds = float(deg_df["condition_ds"].mean())
             avg_pearson_delta = float(deg_df["condition_pearson_delta"].mean())
+            avg_pearson_delta_hat = float(deg_df["condition_pearson_delta_hat"].mean()) if "condition_pearson_delta_hat" in deg_df else float("nan")
             avg_pearson_delta_top20 = float(deg_df["condition_pearson_delta_top20"].mean())
+            avg_pearson_delta_hat_top20 = float(deg_df["condition_pearson_delta_hat_top20"].mean()) if "condition_pearson_delta_hat_top20" in deg_df else float("nan")
             avg_pearson_delta_top50 = float(deg_df["condition_pearson_delta_top50"].mean())
+            avg_pearson_delta_hat_top50 = float(deg_df["condition_pearson_delta_hat_top50"].mean()) if "condition_pearson_delta_hat_top50" in deg_df else float("nan")
             avg_pearson_delta_top100 = float(deg_df["condition_pearson_delta_top100"].mean())
+            avg_pearson_delta_hat_top100 = float(deg_df["condition_pearson_delta_hat_top100"].mean()) if "condition_pearson_delta_hat_top100" in deg_df else float("nan")
             avg_pearson_delta_top1000 = float(deg_df["condition_pearson_delta_top1000"].mean())
+            avg_pearson_delta_hat_top1000 = float(deg_df["condition_pearson_delta_hat_top1000"].mean()) if "condition_pearson_delta_hat_top1000" in deg_df else float("nan")
             print(
                 f"Per-condition DEG avg => R²: {avg_r2:.4f}, EV: {avg_ev:.4f}, "
                 f"PCC: {avg_pcc:.4f}, condition_DS: {avg_condition_ds:.4f}, "
                 f"DE-Spearman: {avg_de_spearman:.4f}, avg #DEGs: {avg_ndegs:.0f}"
             )
             print(
-                f"Per-condition Pearson => Δ: {avg_pearson_delta:.4f}, Δ20: {avg_pearson_delta_top20:.4f}, Δ50: {avg_pearson_delta_top50:.4f}, Δ100: {avg_pearson_delta_top100:.4f}, Δ1000: {avg_pearson_delta_top1000:.4f}"
+                f"Per-condition Pearson => Δ: {avg_pearson_delta:.4f}, Δ̂: {avg_pearson_delta_hat:.4f}, "
+                f"Δ20: {avg_pearson_delta_top20:.4f}, Δ̂20: {avg_pearson_delta_hat_top20:.4f}, "
+                f"Δ50: {avg_pearson_delta_top50:.4f}, Δ̂50: {avg_pearson_delta_hat_top50:.4f}, "
+                f"Δ100: {avg_pearson_delta_top100:.4f}, Δ̂100: {avg_pearson_delta_hat_top100:.4f}, "
+                f"Δ1000: {avg_pearson_delta_top1000:.4f}, Δ̂1000: {avg_pearson_delta_hat_top1000:.4f}"
             )
             metrics.update(
                 {
@@ -413,10 +440,15 @@ def evaluate_predictions(ctrl_adata, real_adata, pred_adata, output_prefix="",
                     "ev_deg": avg_ev,
                     "pcc_deg": avg_pcc,
                     "pearson_delta": avg_pearson_delta,
+                    "pearson_delta_hat": avg_pearson_delta_hat,
                     "pearson_delta_top20": avg_pearson_delta_top20,
+                    "pearson_delta_hat_top20": avg_pearson_delta_hat_top20,
                     "pearson_delta_top50": avg_pearson_delta_top50,
+                    "pearson_delta_hat_top50": avg_pearson_delta_hat_top50,
                     "pearson_delta_top100": avg_pearson_delta_top100,
+                    "pearson_delta_hat_top100": avg_pearson_delta_hat_top100,
                     "pearson_delta_top1000": avg_pearson_delta_top1000,
+                    "pearson_delta_hat_top1000": avg_pearson_delta_hat_top1000,
                     "de_spearman": avg_de_spearman,
                     "avg_n_degs": avg_ndegs,
                     "condition_ds": avg_condition_ds,

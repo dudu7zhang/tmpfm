@@ -65,11 +65,18 @@ def cal_delta_metric(ctrl_mean, real_mean, pred_mean, top_k=20, ds_top_k=None, s
     delta_pred = pred_mean - ctrl_mean
     pearson_delta, _ = scipy.stats.pearsonr(delta_real, delta_pred)
 
+    # Fold-change (relative delta): δ / ctrl, for high-expr vs low-expr gene fairness
+    fc_real = delta_real / (ctrl_mean + 1e-8)
+    fc_pred = delta_pred / (ctrl_mean + 1e-8)
+    pearson_delta_hat, _ = scipy.stats.pearsonr(fc_real, fc_pred)
+
     top_n_idx = np.argsort(np.abs(delta_real))[-top_k:]
     if len(top_n_idx) > 1:
         pearson_delta_top_k, _ = scipy.stats.pearsonr(delta_real[top_n_idx], delta_pred[top_n_idx])
+        pearson_delta_hat_top_k, _ = scipy.stats.pearsonr(fc_real[top_n_idx], fc_pred[top_n_idx])
     else:
         pearson_delta_top_k = 0.0
+        pearson_delta_hat_top_k = 0.0
 
     # DS is all-gene sign agreement by default.  A positive ds_top_k is kept
     # only for backward-compatible ad-hoc analyses.
@@ -80,7 +87,7 @@ def cal_delta_metric(ctrl_mean, real_mean, pred_mean, top_k=20, ds_top_k=None, s
     sign_real = np.where(np.abs(delta_real[ds_idx]) > sign_eps, np.sign(delta_real[ds_idx]), 0)
     sign_pred = np.where(np.abs(delta_pred[ds_idx]) > sign_eps, np.sign(delta_pred[ds_idx]), 0)
     ds_score = np.mean([1 if r == p else 0 for r, p in zip(sign_real, sign_pred)])
-    return pearson_delta, pearson_delta_top_k, ds_score
+    return pearson_delta, pearson_delta_top_k, ds_score, pearson_delta_hat, pearson_delta_hat_top_k
 
 def _align_pred_var_names(ctrl, target, pred):
     """Keep prediction gene IDs in the same namespace as ctrl/target."""
@@ -200,10 +207,10 @@ def compute_deg_metrics_per_condition(ctrl_adata, real_adata, pred_adata,
             deg_overlap = cal_deg_overlap_metrics(ctrl_mean, real_mean, pred_mean)
 
             # Per-condition delta metrics (Pearson Δ, Δ20, Δ50, Δ100, Δ1000, DS)
-            cond_pearson_d, cond_pearson_d20, cond_ds = cal_delta_metric(ctrl_mean, real_mean, pred_mean, top_k=20)
-            _, cond_pearson_d50, _ = cal_delta_metric(ctrl_mean, real_mean, pred_mean, top_k=50)
-            _, cond_pearson_d100, _ = cal_delta_metric(ctrl_mean, real_mean, pred_mean, top_k=100)
-            _, cond_pearson_d1000, _ = cal_delta_metric(ctrl_mean, real_mean, pred_mean, top_k=1000)
+            cond_pearson_d, cond_pearson_d20, cond_ds, cond_pearson_dh, cond_pearson_dh20 = cal_delta_metric(ctrl_mean, real_mean, pred_mean, top_k=20)
+            _, cond_pearson_d50, _, _, cond_pearson_dh50 = cal_delta_metric(ctrl_mean, real_mean, pred_mean, top_k=50)
+            _, cond_pearson_d100, _, _, cond_pearson_dh100 = cal_delta_metric(ctrl_mean, real_mean, pred_mean, top_k=100)
+            _, cond_pearson_d1000, _, _, cond_pearson_dh1000 = cal_delta_metric(ctrl_mean, real_mean, pred_mean, top_k=1000)
 
             # DE Spearman: rank correlation of logFC on real DE genes
             de_spearman = float("nan")
@@ -252,10 +259,15 @@ def compute_deg_metrics_per_condition(ctrl_adata, real_adata, pred_adata,
                 "de_spearman": de_spearman,
                 "condition_ds": float(cond_ds),
                 "condition_pearson_delta": float(cond_pearson_d) if not np.isnan(cond_pearson_d) else 0.0,
+                "condition_pearson_delta_hat": float(cond_pearson_dh) if not np.isnan(cond_pearson_dh) else 0.0,
                 "condition_pearson_delta_top20": float(cond_pearson_d20) if not np.isnan(cond_pearson_d20) else 0.0,
+                "condition_pearson_delta_hat_top20": float(cond_pearson_dh20) if not np.isnan(cond_pearson_dh20) else 0.0,
                 "condition_pearson_delta_top50": float(cond_pearson_d50) if not np.isnan(cond_pearson_d50) else 0.0,
+                "condition_pearson_delta_hat_top50": float(cond_pearson_dh50) if not np.isnan(cond_pearson_dh50) else 0.0,
                 "condition_pearson_delta_top100": float(cond_pearson_d100) if not np.isnan(cond_pearson_d100) else 0.0,
+                "condition_pearson_delta_hat_top100": float(cond_pearson_dh100) if not np.isnan(cond_pearson_dh100) else 0.0,
                 "condition_pearson_delta_top1000": float(cond_pearson_d1000) if not np.isnan(cond_pearson_d1000) else 0.0,
+                "condition_pearson_delta_hat_top1000": float(cond_pearson_dh1000) if not np.isnan(cond_pearson_dh1000) else 0.0,
             })
         except Exception:
             continue
@@ -742,6 +754,12 @@ def parse_args():
     p.add_argument("--pert-gnn-enabled", action="store_true", help="Enable perturbation-side GNN prior.")
     p.add_argument("--pert-gnn-hidden-dim", type=int, default=16)
     p.add_argument("--pert-gnn-num-layers", type=int, default=2)
+    p.add_argument("--pert-gnn-num-heads", type=int, default=4, help="Number of attention heads for enhanced GNN.")
+    p.add_argument("--enhanced-pert-gnn", action="store_true", help="Use EnhancedPerturbationGNN (multi-head attention + virtual node) instead of basic GCN.")
+    p.add_argument("--no-gene-mask", action="store_true", help="Disable the per-gene sigmoid mask on velocity output.")
+    p.add_argument("--delta-head-enabled", action="store_true", help="Enable direct delta prediction head (condition → per-gene delta).")
+    p.add_argument("--delta-head-hidden", type=int, default=256, help="Hidden dim of the delta head MLP.")
+    p.add_argument("--delta-head-weight", type=float, default=0.0, help="Weight for delta head MSE loss. Default 0 disables.")
     p.add_argument(
         "--pert-gnn-go-file",
         default=str(ROOT / "comparison_methods" / "TxPert-main" / "data" / "graphs" / "go" / "go_top_50.csv"),
@@ -807,8 +825,15 @@ def parse_args():
     p.add_argument("--condition-mean-delta-weight", type=float, default=0.0, help="Weight for condition-level mean delta supervision.")
     p.add_argument("--high-delta-endpoint-weight", type=float, default=0.0, help="Extra endpoint/mean-loss weight on genes with large true condition delta.")
     p.add_argument("--high-delta-max-weight", type=float, default=4.0, help="Maximum per-gene multiplier used by high-delta endpoint/mean losses.")
+    p.add_argument("--top-delta-loss-weight", type=float, default=0.0, help="Extra condition-mean delta loss on top true-response genes. Default 0 disables.")
+    p.add_argument("--top-delta-endpoint-weight", type=float, default=0.0, help="Extra per-gene multiplier for endpoint/mean losses on top true-response genes. Default 0 disables.")
+    p.add_argument("--top-delta-fraction", type=float, default=0.05, help="Fraction of genes treated as top-delta genes for top-delta losses.")
+    p.add_argument("--top-delta-min-genes", type=int, default=20, help="Minimum number of top-delta genes per condition.")
     p.add_argument("--terminal-loss-time-power", type=float, default=2.0, help="Power for terminal-loss time gate t^p; larger values focus endpoint-style losses closer to t=1.")
     p.add_argument("--cosine-loss-weight", type=float, default=0.1, help="Weight for cosine similarity loss on delta (directional accuracy).")
+    p.add_argument("--flow-noise", type=float, default=0.1, help="Gaussian noise std in flow matching path. Higher = smoother velocity field, better generalization.")
+    p.add_argument("--snr-endpoint-weight", type=float, default=0.0, help="Weight for SNR-weighted endpoint MSE (per-gene signal-to-noise ratio, higher weight on DEGs). Default 0 disables.")
+    p.add_argument("--cov-loss-weight", type=float, default=0.0, help="Weight for covariance-preserving loss (gene-gene covariance structure matching). Default 0 disables.")
     p.add_argument("--hidden-dims", type=int, nargs="+", default=[512, 512, 512])
     p.add_argument("--decoder-dims", type=int, nargs="+", default=[1024, 1024, 1024])
     p.add_argument("--time-encoder-dims", type=int, nargs="+", default=[512, 512, 512])
@@ -983,6 +1008,10 @@ def main():
             "edge_src": _gnn_src,
             "edge_tgt": _gnn_tgt,
             "edge_w": _gnn_w,
+            "enhanced_gnn": args.enhanced_pert_gnn,
+            "gnn_hidden_dim": args.pert_gnn_hidden_dim,
+            "gnn_num_layers": args.pert_gnn_num_layers,
+            "gnn_num_heads": args.pert_gnn_num_heads,
         }
         print(f"Perturbation GNN graph: {len(_pert_gene_to_idx)} nodes, {_gnn_src.shape[0]} edges")
     elif args.pert_gnn_enabled:
@@ -1221,9 +1250,13 @@ def main():
         gene_attn_dim=args.gene_attn_dim,
         gene_self_attn_layers=args.gene_self_attn_layers,
         cross_attn_heads=args.cross_attn_heads,
+        probability_path={"constant_noise": args.flow_noise},
         optimizer=optax.MultiSteps(optax.chain(optax.clip_by_global_norm(args.gradient_clip_norm), optax.adamw(args.learning_rate, weight_decay=1e-5)), args.gradient_accumulation_steps),
         conditioning=args.conditioning,
         perturbation_gnn_kwargs=perturbation_gnn_kwargs,
+        delta_head_enabled=args.delta_head_enabled,
+        delta_head_hidden=args.delta_head_hidden,
+        gene_mask_enabled=not args.no_gene_mask,
         solver_kwargs={
             "condition_combined_loss_weight": args.condition_combined_loss_weight,
             "condition_combined_sinkhorn_weight": 0.0,
@@ -1233,8 +1266,15 @@ def main():
             "condition_mean_delta_weight": args.condition_mean_delta_weight,
             "high_delta_endpoint_weight": args.high_delta_endpoint_weight,
             "high_delta_max_weight": args.high_delta_max_weight,
+            "top_delta_loss_weight": args.top_delta_loss_weight,
+            "top_delta_endpoint_weight": args.top_delta_endpoint_weight,
+            "top_delta_fraction": args.top_delta_fraction,
+            "top_delta_min_genes": args.top_delta_min_genes,
             "terminal_loss_time_power": args.terminal_loss_time_power,
             "cosine_loss_weight": args.cosine_loss_weight,
+            "delta_head_weight": args.delta_head_weight,
+            "snr_endpoint_weight": args.snr_endpoint_weight,
+            "cov_loss_weight": args.cov_loss_weight,
             "match_every_n": args.match_every_n,
         },
         # solver_kwargs={
@@ -1272,12 +1312,21 @@ def main():
     print(f"  cosine_loss_weight: {args.cosine_loss_weight}")
     print(f"  high_delta_endpoint_weight: {args.high_delta_endpoint_weight}")
     print(f"  high_delta_max_weight: {args.high_delta_max_weight}")
+    print(f"  top_delta_loss_weight: {args.top_delta_loss_weight}")
+    print(f"  top_delta_endpoint_weight: {args.top_delta_endpoint_weight}")
+    print(f"  top_delta_fraction: {args.top_delta_fraction}")
+    print(f"  top_delta_min_genes: {args.top_delta_min_genes}")
+    print(f"  snr_endpoint_weight: {args.snr_endpoint_weight}")
+    print(f"  cov_loss_weight: {args.cov_loss_weight}")
     print(f"  terminal_loss_time_power: {args.terminal_loss_time_power}")
     print(f"")
     print(f"  pert_gnn_enabled: {args.pert_gnn_enabled}")
     if args.pert_gnn_enabled:
         print(f"  pert_gnn_hidden_dim: {args.pert_gnn_hidden_dim}")
         print(f"  pert_gnn_num_layers: {args.pert_gnn_num_layers}")
+        print(f"  enhanced_pert_gnn: {args.enhanced_pert_gnn}")
+        if args.enhanced_pert_gnn:
+            print(f"  pert_gnn_num_heads: {args.pert_gnn_num_heads}")
     print(f"  use_cell_type_condition: {args.use_cell_type_condition}")
     print(f"===================================")
     print(f"Start training: iterations={args.num_iterations}, batch_size={args.batch_size}")
@@ -1381,6 +1430,7 @@ def main():
             all_obs.append(obs)
     print("Prediction finished")
     X = np.vstack(all_X)
+    X = np.clip(X, 0, None)  # clamp negative predicted expression to 0
     obs = pd.concat(all_obs, ignore_index=True)
     pred_dir = Path(args.output_dir) / f"predictions_{run_label}"
     pred_dir.mkdir(parents=True, exist_ok=True)
@@ -1478,12 +1528,21 @@ def main():
             avg_n_overlap = float(deg_df["n_overlap_degs"].mean())
             avg_condition_ds = float(deg_df["condition_ds"].mean())
             avg_pearson_delta = float(deg_df["condition_pearson_delta"].mean())
+            avg_pearson_delta_hat = float(deg_df["condition_pearson_delta_hat"].mean()) if "condition_pearson_delta_hat" in deg_df else float("nan")
             avg_pearson_delta_top20 = float(deg_df["condition_pearson_delta_top20"].mean())
+            avg_pearson_delta_hat_top20 = float(deg_df["condition_pearson_delta_hat_top20"].mean()) if "condition_pearson_delta_hat_top20" in deg_df else float("nan")
             avg_pearson_delta_top50 = float(deg_df["condition_pearson_delta_top50"].mean())
+            avg_pearson_delta_hat_top50 = float(deg_df["condition_pearson_delta_hat_top50"].mean()) if "condition_pearson_delta_hat_top50" in deg_df else float("nan")
             avg_pearson_delta_top100 = float(deg_df["condition_pearson_delta_top100"].mean())
+            avg_pearson_delta_hat_top100 = float(deg_df["condition_pearson_delta_hat_top100"].mean()) if "condition_pearson_delta_hat_top100" in deg_df else float("nan")
             avg_pearson_delta_top1000 = float(deg_df["condition_pearson_delta_top1000"].mean())
+            avg_pearson_delta_hat_top1000 = float(deg_df["condition_pearson_delta_hat_top1000"].mean()) if "condition_pearson_delta_hat_top1000" in deg_df else float("nan")
             print(f"Per-condition DEG avg => R²: {avg_r2:.4f}, EV: {avg_ev:.4f}, PCC: {avg_pcc:.4f}, condition_DS: {avg_condition_ds:.4f}, DE-Spearman: {avg_de_spearman:.4f}, avg #DEGs: {avg_ndegs:.0f}")
-            print(f"Per-condition Pearson => Δ: {avg_pearson_delta:.4f}, Δ20: {avg_pearson_delta_top20:.4f}, Δ50: {avg_pearson_delta_top50:.4f}, Δ100: {avg_pearson_delta_top100:.4f}, Δ1000: {avg_pearson_delta_top1000:.4f}")
+            print(f"Per-condition Pearson => Δ: {avg_pearson_delta:.4f}, Δ̂: {avg_pearson_delta_hat:.4f}, "
+                  f"Δ20: {avg_pearson_delta_top20:.4f}, Δ̂20: {avg_pearson_delta_hat_top20:.4f}, "
+                  f"Δ50: {avg_pearson_delta_top50:.4f}, Δ̂50: {avg_pearson_delta_hat_top50:.4f}, "
+                  f"Δ100: {avg_pearson_delta_top100:.4f}, Δ̂100: {avg_pearson_delta_hat_top100:.4f}, "
+                  f"Δ1000: {avg_pearson_delta_top1000:.4f}, Δ̂1000: {avg_pearson_delta_hat_top1000:.4f}")
             print(f"DEG Overlap => Precision: {avg_precision:.4f}, Recall: {avg_recall:.4f}, F1: {avg_f1:.4f}, Jaccard: {avg_jaccard:.4f}, avg #pred-DEGs: {avg_n_pred_degs:.0f}, avg #overlap: {avg_n_overlap:.0f}")
             metrics_summary.update(
                 {
@@ -1491,10 +1550,15 @@ def main():
                     "ev_deg": avg_ev,
                     "pcc_deg": avg_pcc,
                     "pearson_delta": avg_pearson_delta,
+                    "pearson_delta_hat": avg_pearson_delta_hat,
                     "pearson_delta_top20": avg_pearson_delta_top20,
+                    "pearson_delta_hat_top20": avg_pearson_delta_hat_top20,
                     "pearson_delta_top50": avg_pearson_delta_top50,
+                    "pearson_delta_hat_top50": avg_pearson_delta_hat_top50,
                     "pearson_delta_top100": avg_pearson_delta_top100,
+                    "pearson_delta_hat_top100": avg_pearson_delta_hat_top100,
                     "pearson_delta_top1000": avg_pearson_delta_top1000,
+                    "pearson_delta_hat_top1000": avg_pearson_delta_hat_top1000,
                     "de_spearman": avg_de_spearman,
                     "deg_precision": avg_precision,
                     "deg_recall": avg_recall,

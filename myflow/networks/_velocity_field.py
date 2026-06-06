@@ -10,7 +10,7 @@ from flax import linen as nn
 from flax.training import train_state
 
 from myflow._types import Layers_separate_input_t, Layers_t
-from myflow.networks._set_encoders import ConditionEncoder, PerturbationGNN
+from myflow.networks._set_encoders import ConditionEncoder, PerturbationGNN, EnhancedPerturbationGNN
 from myflow.networks._utils import FilmBlock, MLPBlock, ResNetBlock, sinusoidal_time_encoder
 
 __all__ = ["ConditionalVelocityField"]
@@ -57,6 +57,10 @@ class ConditionalVelocityField(nn.Module):
     # Perturbation-conditioned gene mask: sparse velocity output
     gene_mask_enabled: bool = True
 
+    # Direct delta prediction head (auxiliary branch, off by default)
+    delta_head_enabled: bool = False
+    delta_head_hidden: int = 256
+
     # Gene-level self-attention / cross-attention
     gene_attn_dim: int = 16
     gene_self_attn_heads: int = 4
@@ -96,21 +100,45 @@ class ConditionalVelocityField(nn.Module):
         # ---- Perturbation-side GNN: learnable node embeddings + GO/STRING graph ----
         gnn_config = getattr(self, 'x_gnn_config', None) or {}
         n_pert = gnn_config.get('num_pert_genes', 0)
+        use_enhanced_gnn = gnn_config.get('enhanced_gnn', False)
+        gnn_hidden = gnn_config.get('gnn_hidden_dim', self.gene_attn_dim)
+        gnn_layers = gnn_config.get('gnn_num_layers', 2)
+        gnn_heads = gnn_config.get('gnn_num_heads', 4)
         if n_pert > 0:
             self.pert_embeddings = self.param(
                 "pert_embeddings",
                 nn.initializers.normal(0.02),
-                (n_pert, self.gene_attn_dim),
+                (n_pert, gnn_hidden),
             )
-            self.perturbation_gnn = PerturbationGNN(
-                hidden_dim=self.gene_attn_dim,
-                num_layers=2,
-                edge_src=gnn_config.get('edge_src'),
-                edge_tgt=gnn_config.get('edge_tgt'),
-                edge_w=gnn_config.get('edge_w'),
-            )
+            if use_enhanced_gnn:
+                self.perturbation_gnn = EnhancedPerturbationGNN(
+                    hidden_dim=gnn_hidden,
+                    num_layers=gnn_layers,
+                    num_heads=gnn_heads,
+                    edge_src=gnn_config.get('edge_src'),
+                    edge_tgt=gnn_config.get('edge_tgt'),
+                    edge_w=gnn_config.get('edge_w'),
+                )
+            else:
+                self.perturbation_gnn = PerturbationGNN(
+                    hidden_dim=gnn_hidden,
+                    num_layers=gnn_layers,
+                    edge_src=gnn_config.get('edge_src'),
+                    edge_tgt=gnn_config.get('edge_tgt'),
+                    edge_w=gnn_config.get('edge_w'),
+                )
         else:
             self.perturbation_gnn = None
+
+        # Direct delta prediction head: condition embedding → per-gene delta
+        if self.delta_head_enabled:
+            self.delta_head_dense1 = nn.Dense(self.delta_head_hidden)
+            self.delta_head_dropout = nn.Dropout(self.cond_output_dropout)
+            self.delta_head_dense2 = nn.Dense(self.output_dim)
+        else:
+            self.delta_head_dense1 = None
+            self.delta_head_dropout = None
+            self.delta_head_dense2 = None
 
         self.layer_cond_output_dropout = nn.Dropout(rate=self.cond_output_dropout)
         self.layer_norm_condition = nn.LayerNorm() if self.layer_norm_before_concatenation else lambda x: x
@@ -233,6 +261,15 @@ class ConditionalVelocityField(nn.Module):
 
         cond_embedding = self.layer_cond_output_dropout(cond_embedding, deterministic=not train)
 
+        # Direct delta prediction: condition → per-gene expression change
+        if self.delta_head_dense1 is not None:
+            delta_pred = self.delta_head_dense1(cond_embedding)
+            delta_pred = nn.gelu(delta_pred)
+            delta_pred = self.delta_head_dropout(delta_pred, deterministic=not train)
+            delta_pred = self.delta_head_dense2(delta_pred)
+        else:
+            delta_pred = None
+
         t_encoded = sinusoidal_time_encoder(t, time_freqs=self.time_freqs, time_max_period=self.time_max_period)
         if squeeze:
             t_encoded = t_encoded[None, :]  # (freqs,) → (1, freqs)
@@ -298,14 +335,17 @@ class ConditionalVelocityField(nn.Module):
 
         # Perturbation-conditioned gene mask: learns which genes each perturbation affects,
         # enforcing sparse, perturbation-specific velocity predictions.
+        # Mean-normalized so the mask can only redistribute importance across genes,
+        # not globally shrink the velocity to cheat the loss.
         if self.gene_mask_head is not None:
             gene_mask = nn.sigmoid(self.gene_mask_head(cond_embedding))
+            gene_mask = gene_mask / (jnp.mean(gene_mask, axis=-1, keepdims=True) + 1e-8)
             velocity = velocity * gene_mask
 
         if squeeze:
             velocity = jnp.squeeze(velocity, axis=0)
 
-        return velocity, cond_mean, cond_logvar
+        return velocity, cond_mean, cond_logvar, delta_pred
 
     def get_condition_embedding(self, condition: dict[str, jnp.ndarray]) -> tuple[jnp.ndarray, jnp.ndarray]:
         if condition:

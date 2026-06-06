@@ -23,6 +23,21 @@ GPU_CELLFLOW=${GPU_CELLFLOW:-1}
 GPU_SCDFM=${GPU_SCDFM:-2}
 GPU_TXPERT=${GPU_TXPERT:-1}
 
+MYFLOW_ENDPOINT_MSE_WEIGHT=${MYFLOW_ENDPOINT_MSE_WEIGHT:-0.0}
+MYFLOW_CONDITION_MEAN_DELTA_WEIGHT=${MYFLOW_CONDITION_MEAN_DELTA_WEIGHT:-0.0}
+MYFLOW_TOP_DELTA_LOSS_WEIGHT=${MYFLOW_TOP_DELTA_LOSS_WEIGHT:-0.0}
+MYFLOW_TOP_DELTA_ENDPOINT_WEIGHT=${MYFLOW_TOP_DELTA_ENDPOINT_WEIGHT:-0.0}
+MYFLOW_TOP_DELTA_FRACTION=${MYFLOW_TOP_DELTA_FRACTION:-0.05}
+MYFLOW_TOP_DELTA_MIN_GENES=${MYFLOW_TOP_DELTA_MIN_GENES:-50}
+MYFLOW_SNR_ENDPOINT_WEIGHT=${MYFLOW_SNR_ENDPOINT_WEIGHT:-1.0}
+MYFLOW_FLOW_NOISE=${MYFLOW_FLOW_NOISE:-0.0}
+MYFLOW_DELTA_HEAD_ENABLED=${MYFLOW_DELTA_HEAD_ENABLED:-}
+MYFLOW_DELTA_HEAD_WEIGHT=${MYFLOW_DELTA_HEAD_WEIGHT:-0.0}
+MYFLOW_ENHANCED_GNN=${MYFLOW_ENHANCED_GNN:---enhanced-pert-gnn}
+MYFLOW_GNN_HIDDEN_DIM=${MYFLOW_GNN_HIDDEN_DIM:-128}
+MYFLOW_GNN_NUM_LAYERS=${MYFLOW_GNN_NUM_LAYERS:-4}
+MYFLOW_GNN_NUM_HEADS=${MYFLOW_GNN_NUM_HEADS:-4}
+
 echo "=========================================="
 echo "Starting Norman Additive runs"
 echo "Run ID: $RUN_ID"
@@ -46,6 +61,21 @@ echo "=========================================="
 
 CUDA_VISIBLE_DEVICES=$GPU_MYFLOW nohup "$FLOW_PY" "$REPO_DIR/scripts/train_myflow_norman_additive.py" \
     --pert-gnn-enabled --run-name myflow_gnn \
+    --condition-embedding-dim 256 \
+    $MYFLOW_ENHANCED_GNN \
+    --pert-gnn-hidden-dim "$MYFLOW_GNN_HIDDEN_DIM" \
+    --pert-gnn-num-layers "$MYFLOW_GNN_NUM_LAYERS" \
+    --pert-gnn-num-heads "$MYFLOW_GNN_NUM_HEADS" \
+    --endpoint-mse-weight "$MYFLOW_ENDPOINT_MSE_WEIGHT" \
+    --condition-mean-delta-weight "$MYFLOW_CONDITION_MEAN_DELTA_WEIGHT" \
+    --top-delta-loss-weight "$MYFLOW_TOP_DELTA_LOSS_WEIGHT" \
+    --top-delta-endpoint-weight "$MYFLOW_TOP_DELTA_ENDPOINT_WEIGHT" \
+    --top-delta-fraction "$MYFLOW_TOP_DELTA_FRACTION" \
+    --top-delta-min-genes "$MYFLOW_TOP_DELTA_MIN_GENES" \
+    --snr-endpoint-weight "$MYFLOW_SNR_ENDPOINT_WEIGHT" \
+    --flow-noise "$MYFLOW_FLOW_NOISE" \
+    $MYFLOW_DELTA_HEAD_ENABLED \
+    --delta-head-weight "$MYFLOW_DELTA_HEAD_WEIGHT" \
     > "$LOG_DIR/myflow_norman_additive.log" 2>&1 &
 echo "MyFlow PID: $!"
 
@@ -61,9 +91,13 @@ echo "MyFlow PID: $!"
 #     > "$LOG_DIR/scdfm_norman_additive.log" 2>&1 &
 # echo "scDFM PID: $!"
 
-# CUDA_VISIBLE_DEVICES=$GPU_TXPERT nohup "$CMP_PY" "$COMPARISON_SCRIPTS_DIR/txpert_norman_additive.py" \
-#     > "$LOG_DIR/txpert_norman_additive.log" 2>&1 &
-# echo "TxPert PID: $!"
+CUDA_VISIBLE_DEVICES=$GPU_TXPERT \
+    TXPERT_EPOCHS=70 \
+    TXPERT_LR=4e-5 \
+    TXPERT_BATCH_SIZE=256 \
+    nohup "$CMP_PY" "$COMPARISON_SCRIPTS_DIR/txpert_norman_additive.py" \
+    > "$LOG_DIR/txpert_norman_additive.log" 2>&1 &
+echo "TxPert PID: $!"
 
 echo "=========================================="
 echo "Launched all five runs."
