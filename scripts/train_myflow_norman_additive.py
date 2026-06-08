@@ -318,6 +318,16 @@ def parse_args():
         "--pert-gnn-ppi-file",
         default=str(ROOT / "comparison_methods" / "TxPert-main" / "data" / "graphs" / "string" / "v11.5.parquet"),
     )
+    # TRRUST GRN prior: TF→target regulatory edges
+    p.add_argument("--trrust-mask-enabled", action="store_true",
+                   help="Enable TRRUST-based gene mask bias (方案 A).")
+    p.add_argument("--trrust-attn-bias-enabled", action="store_true",
+                   help="Enable TRRUST target features in cross-attention KV (方案 B).")
+    p.add_argument(
+        "--trrust-file",
+        default=str(ROOT / "data_train" / "trrust_human_regulation.csv"),
+        help="TRRUST regulatory network CSV (source, target, weight).",
+    )
     return p.parse_args()
 
 
@@ -486,6 +496,24 @@ def main():
     elif args.pert_gnn_enabled:
         print("WARNING: Perturbation GNN enabled but no edges found — disabling.")
 
+    # ==================== TRRUST GRN: TF→target matrix ====================
+    trrust_config = {}
+    if args.trrust_mask_enabled or args.trrust_attn_bias_enabled:
+        from myflow.data._trrust import TRRUSTManager
+        expression_genes = list(adata.var_names)
+        _trrust_mgr = TRRUSTManager(args.trrust_file, expression_genes)
+        # Build matrix: (n_pert_genes, n_expression_genes)
+        _trrust_mat = np.zeros((len(_pert_gene_to_idx), len(expression_genes)), dtype=np.float32)
+        for _g, _i in _pert_gene_to_idx.items():
+            _targets = _trrust_mgr.tf_to_targets.get(_g.upper())
+            if _targets:
+                _trrust_mat[_i, list(_targets)] = 1.0
+        _n_trrust_edges = int(_trrust_mat.sum())
+        print(f"TRRUST target matrix: {len(_pert_gene_to_idx)} pert genes × {len(expression_genes)} expr genes, "
+              f"{_n_trrust_edges} edges, {(_trrust_mat.sum(axis=1) > 0).sum()} TFs with targets")
+        del _trrust_mgr
+        trrust_config = {"target_matrix": _trrust_mat}
+
     if args.use_cell_type_condition:
         adata.obs["cell_type"] = "K562"
         perturbation_covariates["cell_type"] = ["cell_type"]
@@ -640,6 +668,9 @@ def main():
         perturbation_gnn_kwargs=perturbation_gnn_kwargs,
         delta_head_enabled=args.delta_head_enabled,
         delta_head_hidden=args.delta_head_hidden,
+        trrust_mask_enabled=args.trrust_mask_enabled,
+        trrust_attn_bias_enabled=args.trrust_attn_bias_enabled,
+        trrust_config=trrust_config,
         solver_kwargs={
             "condition_combined_loss_weight": args.condition_combined_loss_weight,
             "match_every_n": args.match_every_n,

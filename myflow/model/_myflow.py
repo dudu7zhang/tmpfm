@@ -275,6 +275,10 @@ class MyFlow:
         delta_head_enabled: bool = False,
         delta_head_hidden: int = 256,
         gene_mask_enabled: bool = True,
+        # TRRUST GRN prior
+        trrust_mask_enabled: bool = False,
+        trrust_attn_bias_enabled: bool = False,
+        trrust_config: dict[str, Any] | None = None,
         # GRN / sparsity options
         grn_path: str | None = None,
         use_nonlinear_path: bool = False,
@@ -491,6 +495,9 @@ class MyFlow:
             delta_head_enabled=delta_head_enabled,
             delta_head_hidden=delta_head_hidden,
             gene_mask_enabled=gene_mask_enabled,
+            trrust_mask_enabled=trrust_mask_enabled,
+            trrust_attn_bias_enabled=trrust_attn_bias_enabled,
+            trrust_config=trrust_config or {},
             **vf_kwargs,
         )
         # Bypass Flax field system: directly inject GNN config

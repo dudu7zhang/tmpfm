@@ -70,6 +70,15 @@ class ConditionalVelocityField(nn.Module):
     cross_attn_layers: int = 1
     cross_attn_dropout: float = 0.0
 
+    # TRRUST regulatory prior: TF→target edges from literature
+    # 方案 A: bias the gene mask toward known target genes
+    trrust_mask_enabled: bool = False
+    # 方案 B: add TRRUST target features to cross-attention KV
+    trrust_attn_bias_enabled: bool = False
+    # TRRUST config dict (populated by training script):
+    #   target_matrix: (n_pert_genes, n_expression_genes) binary array
+    trrust_config: dict[str, Any] = dc_field(default_factory=lambda: {})
+
     def _resolve_kwargs(self, value: Any) -> dict[str, Any]:
         """Resolve a dc_field default_factory or plain dict to a real dict."""
         if isinstance(value, dataclasses.Field):
@@ -210,6 +219,30 @@ class ConditionalVelocityField(nn.Module):
         # Perturbation-conditioned gene mask: learns which genes each perturbation affects
         self.gene_mask_head = nn.Dense(self.output_dim) if self.gene_mask_enabled else None
 
+        # TRRUST target embedding: learned feature added to known target genes in cross-attn (方案 B)
+        if self.trrust_attn_bias_enabled:
+            self.trrust_target_emb = self.param(
+                "trrust_target_emb",
+                nn.initializers.normal(0.02),
+                (1, self.gene_attn_dim),
+            )
+        else:
+            self.trrust_target_emb = None
+
+        # TRRUST mask bias scale: learnable strength of TRRUST prior in gene mask (方案 A)
+        if self.trrust_mask_enabled:
+            self.trrust_mask_scale = self.param(
+                "trrust_mask_scale",
+                nn.initializers.constant(1.0),
+                (1,),
+            )
+        else:
+            self.trrust_mask_scale = None
+
+        # TRRUST target matrix: (n_pert_genes, n_expression_genes) — constant, not trained
+        trrust_config = self._resolve_kwargs(self.trrust_config)
+        self._trrust_matrix = trrust_config.get("target_matrix")  # np.ndarray or None
+
         if self.conditioning == "film":
             self.film_block = FilmBlock(
                 input_dim=self.hidden_dims[-1],
@@ -236,6 +269,13 @@ class ConditionalVelocityField(nn.Module):
         train: bool = True,
     ) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]:
         squeeze = x_t.ndim == 1
+
+        # Compute TRRUST target mask from perturbation gene indices + stored matrix
+        trrust_mask = None
+        if isinstance(cond, dict) and "gene_perturbation_indices" in cond:
+            pert_idx = cond["gene_perturbation_indices"].astype(jnp.int32).reshape(-1)
+            if self._trrust_matrix is not None and pert_idx.shape[0] > 0:
+                trrust_mask = jnp.asarray(self._trrust_matrix)[pert_idx].max(axis=0)  # (n_genes,)
 
         # Perturbation gene: look up learnable embeddings by index, then GNN
         if self.perturbation_gnn is not None and "gene_perturbation_indices" in cond:
@@ -301,6 +341,11 @@ class ConditionalVelocityField(nn.Module):
             h_genes = self.gene_ffn_out[i](h_genes)
             h_genes = h_genes + residual
 
+        # ---- TRRUST attn bias: add learned target-gene feature to known targets ----
+        if self.trrust_attn_bias_enabled and trrust_mask is not None:
+            trrust_feat = trrust_mask[:, None] * self.trrust_target_emb[None, :, :]
+            h_genes = h_genes + trrust_feat
+
         # ---- Condition → gene cross-attention: condition selects relevant genes ----
         # Q = condition embedding (fixed), KV = gene features (refined per layer)
         z_q = self.cross_q_proj(cond_embedding)[:, None, :]       # (B, 1, gene_attn_dim)
@@ -338,7 +383,10 @@ class ConditionalVelocityField(nn.Module):
         # Mean-normalized so the mask can only redistribute importance across genes,
         # not globally shrink the velocity to cheat the loss.
         if self.gene_mask_head is not None:
-            gene_mask = nn.sigmoid(self.gene_mask_head(cond_embedding))
+            raw_mask = self.gene_mask_head(cond_embedding)
+            if self.trrust_mask_enabled and trrust_mask is not None:
+                raw_mask = raw_mask + trrust_mask * self.trrust_mask_scale
+            gene_mask = nn.sigmoid(raw_mask)
             gene_mask = gene_mask / (jnp.mean(gene_mask, axis=-1, keepdims=True) + 1e-8)
             velocity = velocity * gene_mask
 

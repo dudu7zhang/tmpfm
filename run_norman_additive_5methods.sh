@@ -16,12 +16,14 @@ mkdir -p "$LOG_DIR"
 
 FLOW_PY="${FLOW_PY:-$HOME/miniconda3/envs/flow/bin/python}"
 CMP_PY="${CMP_PY:-$HOME/miniconda3/envs/cmp_methods/bin/python}"
+CPA_PY="${CPA_PY:-$HOME/miniconda3/envs/cmp_methods/bin/python}"
 
 GPU_MYFLOW=${GPU_MYFLOW:-4}
 GPU_GEARS=${GPU_GEARS:-0}
 GPU_CELLFLOW=${GPU_CELLFLOW:-1}
 GPU_SCDFM=${GPU_SCDFM:-2}
 GPU_TXPERT=${GPU_TXPERT:-1}
+GPU_CPA=${GPU_CPA:-0}
 
 MYFLOW_ENDPOINT_MSE_WEIGHT=${MYFLOW_ENDPOINT_MSE_WEIGHT:-0.0}
 MYFLOW_CONDITION_MEAN_DELTA_WEIGHT=${MYFLOW_CONDITION_MEAN_DELTA_WEIGHT:-0.0}
@@ -33,6 +35,8 @@ MYFLOW_SNR_ENDPOINT_WEIGHT=${MYFLOW_SNR_ENDPOINT_WEIGHT:-1.0}
 MYFLOW_FLOW_NOISE=${MYFLOW_FLOW_NOISE:-0.0}
 MYFLOW_DELTA_HEAD_ENABLED=${MYFLOW_DELTA_HEAD_ENABLED:-}
 MYFLOW_DELTA_HEAD_WEIGHT=${MYFLOW_DELTA_HEAD_WEIGHT:-0.0}
+MYFLOW_TRRUST_MASK_ENABLED=${MYFLOW_TRRUST_MASK_ENABLED:-}
+MYFLOW_TRRUST_ATTN_BIAS_ENABLED=${MYFLOW_TRRUST_ATTN_BIAS_ENABLED:-}
 MYFLOW_ENHANCED_GNN=${MYFLOW_ENHANCED_GNN:---enhanced-pert-gnn}
 MYFLOW_GNN_HIDDEN_DIM=${MYFLOW_GNN_HIDDEN_DIM:-128}
 MYFLOW_GNN_NUM_LAYERS=${MYFLOW_GNN_NUM_LAYERS:-4}
@@ -50,6 +54,7 @@ echo "  GEARS    (comparison)  -> comparison_methods/scripts/gears_norman_additi
 echo "  CellFlow (comparison)  -> comparison_methods/scripts/cellflow_baseline_norman_additive.py"
 echo "  scDFM    (comparison)  -> comparison_methods/scripts/scdfm_norman_additive.py"
 echo "  TxPert   (comparison)  -> comparison_methods/scripts/txpert_norman_additive.py"
+echo "  CPA      (comparison)  -> comparison_methods/scripts/cpa_norman_additive.py"
 echo ""
 echo "GPU assignment:"
 echo "  MyFlow   -> GPU $GPU_MYFLOW (flow)"
@@ -57,6 +62,7 @@ echo "  GEARS    -> GPU $GPU_GEARS (cmp_methods)"
 echo "  CellFlow -> GPU $GPU_CELLFLOW (flow)"
 echo "  scDFM    -> GPU $GPU_SCDFM (cmp_methods)"
 echo "  TxPert   -> GPU $GPU_TXPERT (cmp_methods)"
+echo "  CPA      -> GPU $GPU_CPA (cmp_methods)"
 echo "=========================================="
 
 CUDA_VISIBLE_DEVICES=$GPU_MYFLOW nohup "$FLOW_PY" "$REPO_DIR/scripts/train_myflow_norman_additive.py" \
@@ -76,6 +82,8 @@ CUDA_VISIBLE_DEVICES=$GPU_MYFLOW nohup "$FLOW_PY" "$REPO_DIR/scripts/train_myflo
     --flow-noise "$MYFLOW_FLOW_NOISE" \
     $MYFLOW_DELTA_HEAD_ENABLED \
     --delta-head-weight "$MYFLOW_DELTA_HEAD_WEIGHT" \
+    $MYFLOW_TRRUST_MASK_ENABLED \
+    $MYFLOW_TRRUST_ATTN_BIAS_ENABLED \
     > "$LOG_DIR/myflow_norman_additive.log" 2>&1 &
 echo "MyFlow PID: $!"
 
@@ -91,13 +99,21 @@ echo "MyFlow PID: $!"
 #     > "$LOG_DIR/scdfm_norman_additive.log" 2>&1 &
 # echo "scDFM PID: $!"
 
-CUDA_VISIBLE_DEVICES=$GPU_TXPERT \
-    TXPERT_EPOCHS=70 \
-    TXPERT_LR=4e-5 \
-    TXPERT_BATCH_SIZE=256 \
-    nohup "$CMP_PY" "$COMPARISON_SCRIPTS_DIR/txpert_norman_additive.py" \
-    > "$LOG_DIR/txpert_norman_additive.log" 2>&1 &
-echo "TxPert PID: $!"
+# CUDA_VISIBLE_DEVICES=$GPU_CPA \
+#     CPA_EPOCHS=500 \
+#     CPA_LR=3e-4 \
+#     CPA_BATCH_SIZE=256 \
+#     nohup "$CPA_PY" "$COMPARISON_SCRIPTS_DIR/cpa_norman_additive.py" \
+#     > "$LOG_DIR/cpa_norman_additive.log" 2>&1 &
+# echo "CPA PID: $!"
+
+# CUDA_VISIBLE_DEVICES=$GPU_TXPERT \
+#     TXPERT_EPOCHS=70 \
+#     TXPERT_LR=4e-5 \
+#     TXPERT_BATCH_SIZE=256 \
+#     nohup "$CMP_PY" "$COMPARISON_SCRIPTS_DIR/txpert_norman_additive.py" \
+#     > "$LOG_DIR/txpert_norman_additive.log" 2>&1 &
+# echo "TxPert PID: $!"
 
 echo "=========================================="
 echo "Launched all five runs."
@@ -107,4 +123,5 @@ echo "  tail -f $LOG_DIR/gears_norman_additive.log"
 echo "  tail -f $LOG_DIR/cellflow_norman_additive.log"
 echo "  tail -f $LOG_DIR/scdfm_norman_additive.log"
 echo "  tail -f $LOG_DIR/txpert_norman_additive.log"
+echo "  tail -f $LOG_DIR/cpa_norman_additive.log"
 echo "=========================================="
