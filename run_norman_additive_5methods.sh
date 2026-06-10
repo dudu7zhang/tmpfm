@@ -2,7 +2,10 @@
 # Run Norman Additive experiments:
 #   - MyFlow (ours)
 #   - GEARS / CellFlow / scDFM / TxPert (comparison methods)
-
+# -trrust-mask-enabled 和 --trrust-attn-bias-enabled 
+MYFLOW_TRRUST_MASK_ENABLED="--trrust-mask-enabled" \                                                                                                            
+  MYFLOW_TRRUST_ATTN_BIAS_ENABLED="--trrust-attn-bias-enabled" \                                                                                                  
+#   bash run_norman_additive_5methods.sh
 set -euo pipefail
 
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
