@@ -500,7 +500,7 @@ def main():
     trrust_config = {}
     if args.trrust_mask_enabled or args.trrust_attn_bias_enabled:
         from myflow.data._trrust import TRRUSTManager
-        expression_genes = list(adata.var_names)
+        expression_genes = list(adata.var["gene_name"])
         _trrust_mgr = TRRUSTManager(args.trrust_file, expression_genes)
         # Build matrix: (n_pert_genes, n_expression_genes)
         _trrust_mat = np.zeros((len(_pert_gene_to_idx), len(expression_genes)), dtype=np.float32)

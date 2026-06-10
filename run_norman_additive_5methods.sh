@@ -3,8 +3,8 @@
 #   - MyFlow (ours)
 #   - GEARS / CellFlow / scDFM / TxPert (comparison methods)
 # -trrust-mask-enabled 和 --trrust-attn-bias-enabled 
-MYFLOW_TRRUST_MASK_ENABLED="--trrust-mask-enabled" \                                                                                                            
-  MYFLOW_TRRUST_ATTN_BIAS_ENABLED="--trrust-attn-bias-enabled" \                                                                                                  
+# MYFLOW_TRRUST_MASK_ENABLED="--trrust-mask-enabled" \                                                                                                            
+#   MYFLOW_TRRUST_ATTN_BIAS_ENABLED="--trrust-attn-bias-enabled" \                                                                                                  
 #   bash run_norman_additive_5methods.sh
 set -euo pipefail
 
@@ -22,7 +22,7 @@ CMP_PY="${CMP_PY:-$HOME/miniconda3/envs/cmp_methods/bin/python}"
 CPA_PY="${CPA_PY:-$HOME/miniconda3/envs/cmp_methods/bin/python}"
 
 GPU_MYFLOW=${GPU_MYFLOW:-4}
-GPU_GEARS=${GPU_GEARS:-0}
+GPU_GEARS=${GPU_GEARS:-1}
 GPU_CELLFLOW=${GPU_CELLFLOW:-1}
 GPU_SCDFM=${GPU_SCDFM:-2}
 GPU_TXPERT=${GPU_TXPERT:-1}
@@ -68,35 +68,35 @@ echo "  TxPert   -> GPU $GPU_TXPERT (cmp_methods)"
 echo "  CPA      -> GPU $GPU_CPA (cmp_methods)"
 echo "=========================================="
 
-CUDA_VISIBLE_DEVICES=$GPU_MYFLOW nohup "$FLOW_PY" "$REPO_DIR/scripts/train_myflow_norman_additive.py" \
-    --pert-gnn-enabled --run-name myflow_gnn \
-    --condition-embedding-dim 256 \
-    $MYFLOW_ENHANCED_GNN \
-    --pert-gnn-hidden-dim "$MYFLOW_GNN_HIDDEN_DIM" \
-    --pert-gnn-num-layers "$MYFLOW_GNN_NUM_LAYERS" \
-    --pert-gnn-num-heads "$MYFLOW_GNN_NUM_HEADS" \
-    --endpoint-mse-weight "$MYFLOW_ENDPOINT_MSE_WEIGHT" \
-    --condition-mean-delta-weight "$MYFLOW_CONDITION_MEAN_DELTA_WEIGHT" \
-    --top-delta-loss-weight "$MYFLOW_TOP_DELTA_LOSS_WEIGHT" \
-    --top-delta-endpoint-weight "$MYFLOW_TOP_DELTA_ENDPOINT_WEIGHT" \
-    --top-delta-fraction "$MYFLOW_TOP_DELTA_FRACTION" \
-    --top-delta-min-genes "$MYFLOW_TOP_DELTA_MIN_GENES" \
-    --snr-endpoint-weight "$MYFLOW_SNR_ENDPOINT_WEIGHT" \
-    --flow-noise "$MYFLOW_FLOW_NOISE" \
-    $MYFLOW_DELTA_HEAD_ENABLED \
-    --delta-head-weight "$MYFLOW_DELTA_HEAD_WEIGHT" \
-    $MYFLOW_TRRUST_MASK_ENABLED \
-    $MYFLOW_TRRUST_ATTN_BIAS_ENABLED \
-    > "$LOG_DIR/myflow_norman_additive.log" 2>&1 &
-echo "MyFlow PID: $!"
+# CUDA_VISIBLE_DEVICES=$GPU_MYFLOW nohup "$FLOW_PY" "$REPO_DIR/scripts/train_myflow_norman_additive.py" \
+#     --pert-gnn-enabled --run-name myflow_gnn \
+#     --condition-embedding-dim 256 \
+#     $MYFLOW_ENHANCED_GNN \
+#     --pert-gnn-hidden-dim "$MYFLOW_GNN_HIDDEN_DIM" \
+#     --pert-gnn-num-layers "$MYFLOW_GNN_NUM_LAYERS" \
+#     --pert-gnn-num-heads "$MYFLOW_GNN_NUM_HEADS" \
+#     --endpoint-mse-weight "$MYFLOW_ENDPOINT_MSE_WEIGHT" \
+#     --condition-mean-delta-weight "$MYFLOW_CONDITION_MEAN_DELTA_WEIGHT" \
+#     --top-delta-loss-weight "$MYFLOW_TOP_DELTA_LOSS_WEIGHT" \
+#     --top-delta-endpoint-weight "$MYFLOW_TOP_DELTA_ENDPOINT_WEIGHT" \
+#     --top-delta-fraction "$MYFLOW_TOP_DELTA_FRACTION" \
+#     --top-delta-min-genes "$MYFLOW_TOP_DELTA_MIN_GENES" \
+#     --snr-endpoint-weight "$MYFLOW_SNR_ENDPOINT_WEIGHT" \
+#     --flow-noise "$MYFLOW_FLOW_NOISE" \
+#     $MYFLOW_DELTA_HEAD_ENABLED \
+#     --delta-head-weight "$MYFLOW_DELTA_HEAD_WEIGHT" \
+#     $MYFLOW_TRRUST_MASK_ENABLED \
+#     $MYFLOW_TRRUST_ATTN_BIAS_ENABLED \
+#     > "$LOG_DIR/myflow_norman_additive.log" 2>&1 &
+# echo "MyFlow PID: $!"
 
 # CUDA_VISIBLE_DEVICES=$GPU_GEARS nohup "$CMP_PY" "$COMPARISON_SCRIPTS_DIR/gears_norman_additive.py" \
 #     > "$LOG_DIR/gears_norman_additive.log" 2>&1 &
 # echo "GEARS PID: $!"
 
-# CUDA_VISIBLE_DEVICES=$GPU_CELLFLOW nohup "$FLOW_PY" "$COMPARISON_SCRIPTS_DIR/cellflow_baseline_norman_additive.py" \
-#     > "$LOG_DIR/cellflow_norman_additive.log" 2>&1 &
-# echo "CellFlow PID: $!"
+CUDA_VISIBLE_DEVICES=$GPU_CELLFLOW nohup "$FLOW_PY" "$COMPARISON_SCRIPTS_DIR/cellflow_baseline_norman_additive.py" \
+    > "$LOG_DIR/cellflow_norman_additive.log" 2>&1 &
+echo "CellFlow PID: $!"
 
 # CUDA_VISIBLE_DEVICES=$GPU_SCDFM nohup "$CMP_PY" "$COMPARISON_SCRIPTS_DIR/scdfm_norman_additive.py" \
 #     > "$LOG_DIR/scdfm_norman_additive.log" 2>&1 &
