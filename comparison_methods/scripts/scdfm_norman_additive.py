@@ -33,11 +33,12 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from eval_utils import evaluate_predictions
 
 SEED = 20240508
-FOLD = 0
+FOLD = 1
 SPLIT_METHOD = "additive"
 N_TOP_GENES = 5000
 INFER_TOP_GENE = 1000  # Training: random 1000-gene subset per step. Inference: chunked over all genes.
 K_TOPK = 30
+GAMMA = 0.5  # MMD loss weight (matches original run.sh)
 ADATA_PATH = os.environ.get("NORMAN_ADATA_PATH", "/home/zhangshibo24s/cell_flow/data_train/norman_2019_adata.h5ad")
 if not os.path.exists(ADATA_PATH):
     for _path in (
@@ -115,8 +116,8 @@ print(f"Test conditions: {len(test_sampler._perturbation_covariates)}")
 
 # ===================== Model Setup =====================
 device = "cuda" if torch.cuda.is_available() else "cpu"
-D_MODEL = 512
-STEPS = int(os.environ.get("SCDFM_STEPS", "5000"))
+D_MODEL = 128
+STEPS = int(os.environ.get("SCDFM_STEPS", "200000"))
 BATCH_SIZE = int(os.environ.get("SCDFM_BATCH_SIZE", "16"))
 
 vocab = GeneVocab.from_file(str(SCDFM_ROOT / "src" / "tokenizer" / "norman_5000_highly_vocab.json"))
@@ -176,7 +177,37 @@ def custom_collate(batch):
 
 dataloader = DataLoader(PerturbationDataset(train_sampler, BATCH_SIZE), batch_size=1, shuffle=False, num_workers=4, collate_fn=custom_collate)
 
-ddp_kwargs = DistributedDataParallelKwargs(find_unused_parameters=True)
+# ===================== MMD Loss Utilities (from original scDFM) =====================
+def pairwise_sq_dists(X, Y):
+    return torch.cdist(X, Y, p=2) ** 2
+
+@torch.no_grad()
+def median_sigmas(X, scales=(0.5, 1.0, 2.0, 4.0)):
+    Z = X
+    D2 = pairwise_sq_dists(Z, Z)
+    tri = D2[~torch.eye(D2.size(0), dtype=bool, device=D2.device)]
+    m = torch.median(tri).clamp_min(1e-12)
+    s2 = torch.tensor(scales, device=Z.device) * m
+    return [float(s.item()) for s in torch.sqrt(s2)]
+
+def mmd2_unbiased_multi_sigma(X, Y, sigmas):
+    m, n = X.size(0), Y.size(0)
+    Dxx = pairwise_sq_dists(X, X)
+    Dyy = pairwise_sq_dists(Y, Y)
+    Dxy = pairwise_sq_dists(X, Y)
+    vals = []
+    for sigma in sigmas:
+        beta = 1.0 / (2.0 * (sigma ** 2) + 1e-12)
+        Kxx = torch.exp(-beta * Dxx)
+        Kyy = torch.exp(-beta * Dyy)
+        Kxy = torch.exp(-beta * Dxy)
+        term_xx = (Kxx.sum() - Kxx.diag().sum()) / (m * (m - 1) + 1e-12)
+        term_yy = (Kyy.sum() - Kyy.diag().sum()) / (n * (n - 1) + 1e-12)
+        term_xy = Kxy.mean()
+        vals.append(term_xx + term_yy - 2.0 * term_xy)
+    return torch.stack(vals).mean()
+
+# ===================== Training =====================
 accelerator = Accelerator(kwargs_handlers=[ddp_kwargs])
 criterion = nn.MSELoss()
 optimizer = torch.optim.Adam(vf.parameters(), lr=5e-5)
@@ -199,7 +230,15 @@ def train_step(source, target, perturbation_id):
     noise = torch.randn_like(src)
     path_sample = path_obj.sample(t=t, x_0=noise, x_1=tgt)
     pred_vel = vf(gene_input, path_sample.x_t, path_sample.t, src, perturbation_id, gene_input, mode="predict_y")
-    return ((pred_vel - path_sample.dx_t) ** 2).mean()
+    loss = ((pred_vel - path_sample.dx_t) ** 2).mean()
+
+    # MMD distribution matching loss (matches original run.sh: gamma=0.5)
+    x1_hat = path_sample.x_t + pred_vel * (1 - t).unsqueeze(-1)
+    sigmas = median_sigmas(tgt, scales=(0.5, 1.0, 2.0, 4.0))
+    mmd = mmd2_unbiased_multi_sigma(x1_hat, tgt, sigmas)
+    loss = loss + GAMMA * mmd
+
+    return loss
 
 print("Training scDFM...")
 pbar = tqdm(total=STEPS); iteration = 0

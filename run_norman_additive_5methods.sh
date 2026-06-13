@@ -1,7 +1,7 @@
 #!/bin/bash
 # Run Norman Additive experiments:
 #   - MyFlow (ours)
-#   - GEARS / CellFlow / scDFM / TxPert (comparison methods)
+#   - GEARS / CellFlow / scDFM / TxPert / PerturbDiff / CPA (comparison methods)
 # -trrust-mask-enabled 和 --trrust-attn-bias-enabled 
 # MYFLOW_TRRUST_MASK_ENABLED="--trrust-mask-enabled" \                                                                                                            
 #   MYFLOW_TRRUST_ATTN_BIAS_ENABLED="--trrust-attn-bias-enabled" \                                                                                                  
@@ -26,6 +26,8 @@ GPU_GEARS=${GPU_GEARS:-1}
 GPU_CELLFLOW=${GPU_CELLFLOW:-1}
 GPU_SCDFM=${GPU_SCDFM:-2}
 GPU_TXPERT=${GPU_TXPERT:-1}
+GPU_PERTURBDIFF=${GPU_PERTURBDIFF:-0}
+GPU_SQUIDIFF=${GPU_SQUIDIFF:-1}
 GPU_CPA=${GPU_CPA:-0}
 
 MYFLOW_ENDPOINT_MSE_WEIGHT=${MYFLOW_ENDPOINT_MSE_WEIGHT:-0.0}
@@ -56,16 +58,20 @@ echo "  MyFlow   (ours)        -> scripts/train_myflow_norman_additive.py"
 echo "  GEARS    (comparison)  -> comparison_methods/scripts/gears_norman_additive.py"
 echo "  CellFlow (comparison)  -> comparison_methods/scripts/cellflow_baseline_norman_additive.py"
 echo "  scDFM    (comparison)  -> comparison_methods/scripts/scdfm_norman_additive.py"
-echo "  TxPert   (comparison)  -> comparison_methods/scripts/txpert_norman_additive.py"
-echo "  CPA      (comparison)  -> comparison_methods/scripts/cpa_norman_additive.py"
+echo "  TxPert      (comparison)  -> comparison_methods/scripts/txpert_norman_additive.py"
+echo "  PerturbDiff (comparison)  -> comparison_methods/scripts/perturbdiff_norman_additive.py"
+echo "  SquiDiff    (comparison)  -> comparison_methods/scripts/squidiff_norman_additive.py"
+echo "  CPA         (comparison)  -> comparison_methods/scripts/cpa_norman_additive.py"
 echo ""
 echo "GPU assignment:"
 echo "  MyFlow   -> GPU $GPU_MYFLOW (flow)"
 echo "  GEARS    -> GPU $GPU_GEARS (cmp_methods)"
 echo "  CellFlow -> GPU $GPU_CELLFLOW (flow)"
 echo "  scDFM    -> GPU $GPU_SCDFM (cmp_methods)"
-echo "  TxPert   -> GPU $GPU_TXPERT (cmp_methods)"
-echo "  CPA      -> GPU $GPU_CPA (cmp_methods)"
+echo "  TxPert      -> GPU $GPU_TXPERT (cmp_methods)"
+echo "  PerturbDiff -> GPU $GPU_PERTURBDIFF (cmp_methods)"
+echo "  SquiDiff    -> GPU $GPU_SQUIDIFF (cmp_methods)"
+echo "  CPA         -> GPU $GPU_CPA (cmp_methods)"
 echo "=========================================="
 
 # CUDA_VISIBLE_DEVICES=$GPU_MYFLOW nohup "$FLOW_PY" "$REPO_DIR/scripts/train_myflow_norman_additive.py" \
@@ -94,13 +100,38 @@ echo "=========================================="
 #     > "$LOG_DIR/gears_norman_additive.log" 2>&1 &
 # echo "GEARS PID: $!"
 
-CUDA_VISIBLE_DEVICES=$GPU_CELLFLOW nohup "$FLOW_PY" "$COMPARISON_SCRIPTS_DIR/cellflow_baseline_norman_additive.py" \
-    > "$LOG_DIR/cellflow_norman_additive.log" 2>&1 &
-echo "CellFlow PID: $!"
+# CUDA_VISIBLE_DEVICES=$GPU_CELLFLOW nohup "$FLOW_PY" "$COMPARISON_SCRIPTS_DIR/cellflow_baseline_norman_additive.py" \
+#     > "$LOG_DIR/cellflow_norman_additive.log" 2>&1 &
+# echo "CellFlow PID: $!"
 
 # CUDA_VISIBLE_DEVICES=$GPU_SCDFM nohup "$CMP_PY" "$COMPARISON_SCRIPTS_DIR/scdfm_norman_additive.py" \
 #     > "$LOG_DIR/scdfm_norman_additive.log" 2>&1 &
 # echo "scDFM PID: $!"
+
+CUDA_VISIBLE_DEVICES=$GPU_PERTURBDIFF \
+    PERTURBDIFF_STEPS=50000 \
+    PERTURBDIFF_BATCH_SIZE=128 \
+    PERTURBDIFF_LR=2e-4 \
+    PERTURBDIFF_DIT_DEPTH=8 \
+    PERTURBDIFF_DIT_HEADS=8 \
+    PERTURBDIFF_HIDDEN_DIM=512 \
+    PERTURBDIFF_DIFFUSION_STEPS=1000 \
+    PERTURBDIFF_SAMPLE_STEPS=100 \
+    PERTURBDIFF_MMD_LOSS_FACTOR=1.0 \
+    nohup "$CMP_PY" "$COMPARISON_SCRIPTS_DIR/perturbdiff_norman_additive.py" \
+    > "$LOG_DIR/perturbdiff_norman_additive.log" 2>&1 &
+echo "PerturbDiff PID: $!"
+
+CUDA_VISIBLE_DEVICES=$GPU_SQUIDIFF \
+    SQUIDIFF_STEPS=50000 \
+    SQUIDIFF_BATCH_SIZE=256 \
+    SQUIDIFF_LR=3e-4 \
+    SQUIDIFF_NUM_LAYERS=3 \
+    SQUIDIFF_HIDDEN_SIZE=2048 \
+    SQUIDIFF_DIFFUSION_STEPS=1000 \
+    nohup "$CMP_PY" "$COMPARISON_SCRIPTS_DIR/squidiff_norman_additive.py" \
+    > "$LOG_DIR/squidiff_norman_additive.log" 2>&1 &
+echo "SquiDiff PID: $!"
 
 # CUDA_VISIBLE_DEVICES=$GPU_CPA \
 #     CPA_EPOCHS=500 \
@@ -126,5 +157,7 @@ echo "  tail -f $LOG_DIR/gears_norman_additive.log"
 echo "  tail -f $LOG_DIR/cellflow_norman_additive.log"
 echo "  tail -f $LOG_DIR/scdfm_norman_additive.log"
 echo "  tail -f $LOG_DIR/txpert_norman_additive.log"
+echo "  tail -f $LOG_DIR/perturbdiff_norman_additive.log"
+echo "  tail -f $LOG_DIR/squidiff_norman_additive.log"
 echo "  tail -f $LOG_DIR/cpa_norman_additive.log"
 echo "=========================================="

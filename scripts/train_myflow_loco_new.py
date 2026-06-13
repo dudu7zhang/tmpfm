@@ -850,7 +850,7 @@ def parse_args():
     p.add_argument("--condition-embedding-dim", type=int, default=32, help="Dimension of condition embedding (default: 512, was 256).")
     p.add_argument("--cross-attn-layers", type=int, default=2, help="Number of cross-attention layers (default: 2 for LOCO).")
     p.add_argument("--gene-attn-dim", type=int, default=64, help="Dimension of gene attention embeddings (default: 64 for LOCO).")
-    p.add_argument("--gene-self-attn-layers", type=int, default=1, help="Number of gene self-attention layers (default: 1 for LOCO).")
+    p.add_argument("--gene-self-attn-layers", type=int, default=0, help="Number of gene self-attention layers (default: 1 for LOCO).")
     p.add_argument("--cross-attn-heads", type=int, default=8, help="Number of cross-attention heads (default: 8 for LOCO).")
     p.add_argument("--cond-output-dropout", type=float, default=0.1)
     p.add_argument("--gradient-accumulation-steps", type=int, default=20)
